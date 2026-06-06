@@ -165,6 +165,20 @@ function generarClaveInversionista() {
 }
 
 // ---------------------------------------------------------------------------
+//  AUTORIZAR CORREO — correr UNA vez desde el editor
+// ---------------------------------------------------------------------------
+//  Corre esta funcion una sola vez para autorizar el envio de correos
+//  (Google te pedira un permiso nuevo la primera vez). Te llega un correo de
+//  prueba a ti mismo. Asi la recuperacion de clave podra enviar correos a los
+//  inversionistas.
+function autorizarCorreo() {
+  const correo = Session.getActiveUser().getEmail();
+  MailApp.sendEmail(correo, 'Prueba de correo - Co-desarrolladores-Yod',
+    'Listo: el portal ya puede enviar correos (para la recuperacion de clave). Este es solo un correo de prueba.');
+  return 'Correo de prueba enviado a ' + correo;
+}
+
+// ---------------------------------------------------------------------------
 //  doGet — prueba de vida (abrir la URL del Web App en el navegador)
 // ---------------------------------------------------------------------------
 //  Si abres la URL del despliegue en el navegador, deberias ver {"ok":true}.
