@@ -14,7 +14,7 @@ import logoWhite from './assets/logo_white.png';
 // ===================================================================
 // PEGA AQUI la URL del Web App del Apps Script (termina en /exec).
 // Mientras siga el placeholder, la app muestra un aviso de "Falta conectar el backend".
-const APPS_SCRIPT_URL = "PEGA_AQUI_LA_URL_DEL_APPS_SCRIPT";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxoW0hz0nInT208B8L_WNEpYNW0iPTMNWosl3m3TG9VO6WVRVqh90xKLLSLRQCTEB9O3A/exec";
 
 const ADMIN_KEY = "codeyod-admin-v1";       // bandera de sesion admin + pass tecleada (solo en este navegador)
 const INVESTOR_KEY = "codeyod-investor-v1"; // bandera de sesion inversionista + clave tecleada
