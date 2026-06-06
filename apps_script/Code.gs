@@ -215,6 +215,9 @@ function doPost(e) {
       case 'reportarPago':
         return reportarPago(body);
 
+      case 'recuperarClave':
+        return recuperarClave(body);
+
       default:
         return jsonResponse({ ok: false, error: 'Accion no reconocida: ' + action });
     }
@@ -521,6 +524,64 @@ function reportarPago(body) {
   hoja.getRange(indiceFila, 1, 1, conf.headers.length).setValues([valores]);
 
   return jsonResponse({ ok: true });
+}
+
+// --- recuperarClave: el inversionista pide su acceso por correo ------------
+//  Recibe un email. Si coincide con un inversionista registrado, le GENERA una
+//  clave NUEVA (rota la anterior), la guarda y se la envia por correo (gratis,
+//  con MailApp). Por privacidad, SIEMPRE responde igual (mensaje generico),
+//  exista o no el correo, y NUNCA devuelve la clave en la respuesta: solo va
+//  al correo registrado.
+function recuperarClave(body) {
+  if (demasiadosIntentos()) {
+    return jsonResponse({ ok: false, error: 'Demasiados intentos, espera un momento e intenta de nuevo.' });
+  }
+  const generico = { ok: true, msg: 'Si tu correo esta registrado, te enviamos tu acceso. Revisa tu bandeja (y spam).' };
+
+  const email = (body.email !== undefined && body.email !== null) ? String(body.email).trim().toLowerCase() : '';
+  if (email === '') return jsonResponse(generico);
+
+  // Buscar inversionista por email (exacto, sin distinguir mayusculas).
+  const inversionistas = leerHoja('Inversionistas');
+  let inv = null;
+  for (let i = 0; i < inversionistas.length; i++) {
+    if (String(inversionistas[i].email).trim().toLowerCase() === email) { inv = inversionistas[i]; break; }
+  }
+  if (!inv) {
+    registrarIntentoFallido();
+    return jsonResponse(generico); // no revelamos que no existe
+  }
+
+  // Generar clave nueva y guardarla en su fila (rota la anterior).
+  const nuevaClave = generarClaveInversionista();
+  inv.claveAcceso = nuevaClave;
+  const conf = TABS['Inversionistas'];
+  const hoja = obtenerHojaConEncabezados('Inversionistas');
+  const indiceFila = buscarFilaPorLlave(hoja, conf.headers, conf.keyField, String(inv.id).trim());
+  if (indiceFila <= 0) return jsonResponse(generico);
+  const valores = conf.headers.map(function (col) {
+    const v = (inv[col] !== undefined && inv[col] !== null) ? inv[col] : '';
+    return sanitizarValor(v);
+  });
+  hoja.getRange(indiceFila, 1, 1, conf.headers.length).setValues([valores]);
+
+  // Enviar el correo con la clave nueva.
+  const portalUrl = 'https://alexpueblag.github.io/Co-desarrolladores-Yod/';
+  const nombre = inv.nombre ? String(inv.nombre) : 'Codesarrollador';
+  const asunto = 'Tu acceso al portal de YoDesarrollo';
+  const cuerpo =
+    'Hola ' + nombre + ',\n\n' +
+    'Aqui esta tu clave de acceso al portal de Co-desarrolladores de YoDesarrollo:\n\n' +
+    '    ' + nuevaClave + '\n\n' +
+    'Entra aqui y elige "Soy Codesarrollador": ' + portalUrl + '\n\n' +
+    'Por seguridad, esta clave reemplaza cualquier clave anterior que tuvieras.\n\n' +
+    'YoDesarrollo SAPI de C.V.';
+  try {
+    MailApp.sendEmail(String(inv.email).trim(), asunto, cuerpo);
+  } catch (e) {
+    console.error('Error enviando correo de recuperacion: ' + String(e));
+  }
+  return jsonResponse(generico);
 }
 
 // ===========================================================================

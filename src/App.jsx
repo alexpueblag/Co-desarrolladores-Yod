@@ -376,12 +376,26 @@ function ConfirmDialog({ open, title, message, onConfirm, onCancel, confirmLabel
 // LOGIN GATE
 // ===================================================================
 function LoginGate({ onAdmin, onInvestor }) {
-  const [modo, setModo] = useState(null); // null | "admin" | "investor"
+  const [modo, setModo] = useState(null); // null | "admin" | "investor" | "recuperar"
   const [pass, setPass] = useState("");
   const [clave, setClave] = useState("");
+  const [email, setEmail] = useState("");
+  const [recOk, setRecOk] = useState(false);
   const [verPass, setVerPass] = useState(false);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
+
+  const recuperar = async (e) => {
+    e.preventDefault();
+    setError(""); setCargando(true);
+    if (!BACKEND_LISTO) { setRecOk(true); setCargando(false); return; }
+    try {
+      await apiCall("recuperarClave", { email });
+      setRecOk(true);
+    } catch (err) {
+      setError(err.message || "No se pudo enviar. Intenta de nuevo.");
+    } finally { setCargando(false); }
+  };
 
   const entrarAdmin = async (e) => {
     e.preventDefault();
@@ -503,6 +517,32 @@ function LoginGate({ onAdmin, onInvestor }) {
               <Btn type="submit" variant="gold" disabled={cargando || (BACKEND_LISTO && !clave)} className="w-full">
                 {cargando ? <Spinner /> : <KeyRound size={16} />} Ver mi cartera
               </Btn>
+              <button type="button" onClick={() => { setModo("recuperar"); setError(""); setRecOk(false); setEmail(""); }} className="w-full text-center text-xs text-slate-400 hover:text-amber-600 transition">¿Olvidaste tu clave?</button>
+            </form>
+          )}
+
+          {modo === "recuperar" && (
+            <form onSubmit={recuperar} className="space-y-4">
+              <button type="button" onClick={() => { setModo("investor"); setError(""); setRecOk(false); }} className="text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1">
+                <ArrowLeft size={14} /> Volver
+              </button>
+              <h2 className="font-semibold text-slate-800 flex items-center gap-2"><KeyRound size={18} className="text-amber-600" /> Recuperar mi acceso</h2>
+              {recOk ? (
+                <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-sm text-emerald-800 flex items-start gap-2">
+                  <CheckCircle2 size={16} className="shrink-0 mt-0.5" />
+                  <span>Si tu correo esta registrado, te enviamos tu acceso. Revisa tu bandeja (y la carpeta de spam).</span>
+                </div>
+              ) : (
+                <>
+                  <Field label="Tu correo registrado" hint="Te enviaremos tu clave de acceso a ese correo.">
+                    <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus placeholder="correo@ejemplo.com" />
+                  </Field>
+                  {error && <p className="text-sm text-red-600 flex items-center gap-1"><AlertCircle size={14} /> {error}</p>}
+                  <Btn type="submit" variant="gold" disabled={cargando || !email} className="w-full">
+                    {cargando ? <Spinner /> : <KeyRound size={16} />} Enviarme mi acceso
+                  </Btn>
+                </>
+              )}
             </form>
           )}
         </div>
