@@ -21,6 +21,8 @@ const INVESTOR_KEY = "codeyod-investor-v1"; // bandera de sesion inversionista +
 const CACHE_KEY = "codeyod-cache-v1";       // respaldo de getAll para arranque offline
 
 const TABS = ["Inversionistas", "Proyectos", "Inversiones", "Aportaciones", "Documentos"];
+// Singular legible de cada pestana para los titulos de los modales.
+const SINGULAR_TAB = { Inversionistas: "Codesarrollador", Proyectos: "proyecto", Inversiones: "inversion", Aportaciones: "aportacion", Documentos: "documento", Avances: "avance", Bitacora: "nota" };
 const TASA_DEFAULT = 25;
 
 // ===================================================================
@@ -935,18 +937,24 @@ function AportacionForm({ value, onChange }) {
         <Field label="Monto">
           <Input type="number" value={value.monto || ""} onChange={(e) => set("monto", e.target.value)} />
         </Field>
-        <Field label="Fecha programada">
+        <Field label="Fecha comprometida" hint="Cuando toca pagar.">
           <Input type="date" value={toDateInput(value.fechaProgramada)} onChange={(e) => set("fechaProgramada", e.target.value)} />
         </Field>
       </div>
       <Field label="Concepto">
         <Input value={value.concepto || ""} onChange={(e) => set("concepto", e.target.value)} placeholder="Ej. Aportacion inicial" />
       </Field>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field label="Fecha recibida" hint="Vacio = aun no llega.">
-          <Input type="date" value={toDateInput(value.fechaRecibida)} onChange={(e) => set("fechaRecibida", e.target.value)} />
-        </Field>
-        <Field label="Comprobante (URL)">
+      <div className="rounded-xl bg-slate-50 border border-slate-100 p-3 space-y-3">
+        <div className="text-xs font-medium text-slate-500">Registro del pago (cuando lo recibas y lo verifiques)</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="Fecha recibida" hint="Ponla cuando confirmes el deposito (vacio = aun no llega).">
+            <Input type="date" value={toDateInput(value.fechaRecibida)} onChange={(e) => set("fechaRecibida", e.target.value)} />
+          </Field>
+          <Field label="Folio / referencia del deposito">
+            <Input value={value.referencia || ""} onChange={(e) => set("referencia", e.target.value)} placeholder="Clave de rastreo / referencia" />
+          </Field>
+        </div>
+        <Field label="Comprobante / ticket (URL)" hint="Pega el link del ticket o comprobante (Drive, foto).">
           <Input value={value.comprobanteUrl || ""} onChange={(e) => set("comprobanteUrl", e.target.value)} placeholder="https://..." />
         </Field>
       </div>
@@ -1475,7 +1483,7 @@ function AdminApp({ pass, onLogout }) {
       <Modal
         open={!!modal}
         onClose={() => setModal(null)}
-        title={modal ? `${modal.esNuevo ? "Nuevo" : "Editar"} · ${modal.tab === "Aportaciones" ? "aportacion" : modal.tab.slice(0, -1).toLowerCase()}` : ""}
+        title={modal ? `${modal.esNuevo ? "Nuevo" : "Editar"} · ${SINGULAR_TAB[modal.tab] || modal.tab}` : ""}
       >
         {modal && (
           <FormularioModal
@@ -1848,7 +1856,11 @@ function DetalleInversion({
                   return (
                     <tr key={a.id} className="border-b border-slate-50 last:border-0">
                       <td className="px-2 py-2 text-slate-500 tabular-nums">{a.numeroPago}/{a.totalPagos || "—"}</td>
-                      <td className="px-2 py-2 text-slate-700">{a.concepto || "—"}</td>
+                      <td className="px-2 py-2 text-slate-700">
+                        {a.concepto || "—"}
+                        {a.referencia ? <div className="text-[11px] text-slate-400">Folio: {a.referencia}</div> : null}
+                        {est === "En aprobacion" ? <div className="text-[11px] text-blue-600 font-medium">Reportado por el cliente · verifica y marca recibido</div> : null}
+                      </td>
                       <td className="px-2 py-2 text-slate-500">{fmtFecha(a.fechaProgramada)}</td>
                       <td className="px-2 py-2 text-right tabular-nums font-medium text-slate-800">{money(a.monto)}</td>
                       <td className="px-2 py-2"><EstadoAportacionBadge ap={a} /></td>
@@ -1872,7 +1884,7 @@ function DetalleInversion({
                       <td className="px-2 py-2">
                         <div className="flex gap-1 justify-end">
                           {est !== "Recibida" && (
-                            <button onClick={() => onMarcarRecibida(a)} title="Marcar recibida" className="text-emerald-600 hover:text-emerald-700 p-1 rounded hover:bg-emerald-50">
+                            <button onClick={() => onMarcarRecibida(a)} title="Registrar pago (marcar recibido)" className="text-emerald-600 hover:text-emerald-700 p-1 rounded hover:bg-emerald-50">
                               <CheckCircle2 size={16} />
                             </button>
                           )}
