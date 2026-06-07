@@ -232,6 +232,9 @@ function doPost(e) {
       case 'recuperarClave':
         return recuperarClave(body);
 
+      case 'subirArchivo':
+        return subirArchivo(body);
+
       default:
         return jsonResponse({ ok: false, error: 'Accion no reconocida: ' + action });
     }
@@ -596,6 +599,60 @@ function recuperarClave(body) {
     console.error('Error enviando correo de recuperacion: ' + String(e));
   }
   return jsonResponse(generico);
+}
+
+// --- subirArchivo: sube un archivo (foto/comprobante) a Drive --------------
+//  Recibe el archivo en base64 y lo guarda en una carpeta de Drive del
+//  proyecto, con permiso "cualquiera con el enlace puede ver", y devuelve la
+//  URL. Lo puede usar el admin (pass) o un inversionista (clave). Asi el front
+//  solo guarda la URL en la celda, manteniendo el mismo sistema de enlaces.
+function subirArchivo(body) {
+  // Autorizacion: admin O inversionista valido.
+  let autorizado = esAdmin(body.pass);
+  if (!autorizado) {
+    if (demasiadosIntentos()) {
+      return jsonResponse({ ok: false, error: 'Demasiados intentos, espera un momento e intenta de nuevo.' });
+    }
+    const inv = buscarInversionistaPorClave(body.clave);
+    if (!inv) { registrarIntentoFallido(); return jsonResponse({ ok: false, error: 'No autorizado' }); }
+    autorizado = true;
+  }
+
+  const b64 = body.base64 || '';
+  if (!b64) return jsonResponse({ ok: false, error: 'No llego ningun archivo.' });
+  // Limite ~10 MB (base64 ocupa ~4/3 de los bytes reales).
+  if (b64.length > 14000000) return jsonResponse({ ok: false, error: 'El archivo es muy grande (max ~10 MB). Usa una foto mas ligera.' });
+
+  const nombre = String(body.filename || 'archivo').replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+  const mime = body.mime || 'application/octet-stream';
+
+  try {
+    const bytes = Utilities.base64Decode(b64);
+    const blob = Utilities.newBlob(bytes, mime, nombre);
+    const carpeta = obtenerCarpetaArchivos();
+    const archivo = carpeta.createFile(blob);
+    archivo.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    return jsonResponse({ ok: true, url: archivo.getUrl(), id: archivo.getId() });
+  } catch (e) {
+    console.error('subirArchivo: ' + String(e));
+    return jsonResponse({ ok: false, error: 'No se pudo subir el archivo.' });
+  }
+}
+
+// --- obtenerCarpetaArchivos: carpeta de Drive donde viven los archivos ------
+function obtenerCarpetaArchivos() {
+  const nombre = 'Co-desarrolladores-Yod - Archivos';
+  const it = DriveApp.getFoldersByName(nombre);
+  if (it.hasNext()) return it.next();
+  return DriveApp.createFolder(nombre);
+}
+
+// --- autorizarDrive: correr UNA vez desde el editor para autorizar Drive ----
+//  Crea (si no existe) la carpeta de archivos. Google pedira el permiso nuevo
+//  de Drive la primera vez. Despues, la subida de fotos/comprobantes ya jala.
+function autorizarDrive() {
+  const c = obtenerCarpetaArchivos();
+  return 'Carpeta lista: ' + c.getName() + ' (' + c.getId() + ')';
 }
 
 // ===========================================================================

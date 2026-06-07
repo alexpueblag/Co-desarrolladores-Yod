@@ -5,7 +5,7 @@ import {
   Copy, Check, AlertTriangle, CheckCircle2, Clock, ChevronRight, ChevronDown,
   TrendingUp, ShieldCheck, KeyRound, Link2, ArrowLeft, Banknote, CircleDollarSign,
   AlertCircle, Loader2, Sparkles, ExternalLink, BadgeCheck, CalendarClock,
-  Image as ImageIcon, PlayCircle, MessageCircle, HardHat
+  Image as ImageIcon, PlayCircle, MessageCircle, HardHat, Upload
 } from 'lucide-react';
 import logoWhite from './assets/logo_white.png';
 
@@ -127,6 +127,14 @@ function generarClaveAcceso() {
   let s = "";
   for (let i = 0; i < 15; i++) s += abc.charAt(Math.floor(Math.random() * abc.length));
   return s.slice(0, 5) + "-" + s.slice(5, 10) + "-" + s.slice(10);
+}
+
+// Convierte un enlace de Drive (file/d/ID) en una URL apta para <img> (miniatura).
+function driveImg(url) {
+  const s = String(url || "");
+  const m = s.match(/drive\.google\.com\/file\/d\/([^/]+)/);
+  if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w800`;
+  return url;
 }
 
 // Suma n meses a una fecha "yyyy-MM-dd" (ajustando el dia si el mes es mas corto).
@@ -312,6 +320,58 @@ const inputCls =
 function Input(props) { return <input {...props} className={inputCls + " " + (props.className || "")} />; }
 function Select(props) { return <select {...props} className={inputCls + " " + (props.className || "")} />; }
 function Textarea(props) { return <textarea {...props} className={inputCls + " resize-y " + (props.className || "")} />; }
+
+// Subida de archivos: arrastra o busca un archivo -> se sube a Drive (accion
+// subirArchivo) -> devuelve la URL via onSubido. 'auth' es {pass} (admin) o
+// {clave} (inversionista). Mantiene el sistema de enlaces: solo llena la URL.
+function FileUpload({ auth, onSubido, accept = "image/*,application/pdf", nota }) {
+  const [estado, setEstado] = useState("idle"); // idle | subiendo | ok | error
+  const [error, setError] = useState("");
+  const [drag, setDrag] = useState(false);
+  const inputRef = useRef(null);
+
+  const subir = async (file) => {
+    if (!file) return;
+    setError(""); setEstado("subiendo");
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(new Error("No se pudo leer el archivo."));
+        r.readAsDataURL(file);
+      });
+      const base64 = String(dataUrl).split(",")[1] || "";
+      const res = await apiCall("subirArchivo", { ...(auth || {}), filename: file.name, mime: file.type || "application/octet-stream", base64 });
+      onSubido(res.url);
+      setEstado("ok");
+    } catch (e) {
+      setError(e?.message || "No se pudo subir el archivo."); setEstado("error");
+    }
+  };
+
+  return (
+    <div>
+      <div
+        onClick={() => inputRef.current && inputRef.current.click()}
+        onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files && e.dataTransfer.files[0]) subir(e.dataTransfer.files[0]); }}
+        className={`cursor-pointer rounded-xl border-2 border-dashed p-3 text-center text-xs transition ${drag ? "border-[#c9a96e] bg-[#f5efdf]" : "border-slate-200 hover:border-[#c9a96e]"}`}
+      >
+        {estado === "subiendo" ? (
+          <span className="inline-flex items-center gap-2 text-slate-500"><Spinner size={14} /> Subiendo a Drive...</span>
+        ) : estado === "ok" ? (
+          <span className="inline-flex items-center gap-2 text-emerald-600"><Check size={14} /> Subido. El enlace quedo guardado abajo.</span>
+        ) : (
+          <span className="inline-flex items-center gap-2 text-slate-500"><Upload size={14} /> Arrastra una foto/archivo aqui, o haz clic para buscarlo</span>
+        )}
+        <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => subir(e.target.files && e.target.files[0])} />
+      </div>
+      {nota && estado === "idle" ? <p className="text-[11px] text-slate-400 mt-1">{nota}</p> : null}
+      {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+    </div>
+  );
+}
 
 function Btn({ children, variant = "primary", className = "", ...rest }) {
   const base = "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-3.5 py-2 transition disabled:opacity-50 disabled:cursor-not-allowed";
@@ -921,7 +981,7 @@ function DocumentoForm({ value, onChange }) {
   );
 }
 
-function AvanceForm({ value, onChange }) {
+function AvanceForm({ value, onChange, pass }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
   return (
     <div className="space-y-4">
@@ -939,8 +999,9 @@ function AvanceForm({ value, onChange }) {
       <Field label="Titulo" hint="Ej. Colado de losa nivel 2">
         <Input value={value.titulo || ""} onChange={(e) => set("titulo", e.target.value)} placeholder="Que se ve en la foto/video" />
       </Field>
-      <Field label="Enlace de la foto o video" hint="Link de una imagen/Drive, o de YouTube para video.">
-        <Input value={value.url || ""} onChange={(e) => set("url", e.target.value)} placeholder="https://..." />
+      <Field label="Foto o video" hint="Sube una foto (arrastra o busca), o pega un enlace (Drive / YouTube para video).">
+        {value.tipo !== "video" ? <FileUpload auth={{ pass }} onSubido={(url) => set("url", url)} accept="image/*" nota="Para fotos. Para video, pega el enlace de YouTube abajo." /> : null}
+        <Input value={value.url || ""} onChange={(e) => set("url", e.target.value)} placeholder="https://... (se llena solo al subir foto)" className="mt-2" />
       </Field>
       <Field label="Descripcion (opcional)">
         <Textarea rows={2} value={value.descripcion || ""} onChange={(e) => set("descripcion", e.target.value)} />
@@ -978,7 +1039,7 @@ function BitacoraForm({ value, onChange }) {
   );
 }
 
-function AportacionForm({ value, onChange }) {
+function AportacionForm({ value, onChange, pass }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
   return (
     <div className="space-y-4">
@@ -1010,8 +1071,9 @@ function AportacionForm({ value, onChange }) {
             <Input value={value.referencia || ""} onChange={(e) => set("referencia", e.target.value)} placeholder="Clave de rastreo / referencia" />
           </Field>
         </div>
-        <Field label="Comprobante / ticket (URL)" hint="Pega el link del ticket o comprobante (Drive, foto).">
-          <Input value={value.comprobanteUrl || ""} onChange={(e) => set("comprobanteUrl", e.target.value)} placeholder="https://..." />
+        <Field label="Comprobante / ticket" hint="Sube el archivo (arrastra o busca) o pega un enlace.">
+          <FileUpload auth={{ pass }} onSubido={(url) => set("comprobanteUrl", url)} nota="Foto (JPG/PNG) o PDF, max ~10 MB. Se guarda en tu Drive." />
+          <Input value={value.comprobanteUrl || ""} onChange={(e) => set("comprobanteUrl", e.target.value)} placeholder="https://... (se llena solo al subir)" className="mt-2" />
         </Field>
       </div>
     </div>
@@ -1554,6 +1616,7 @@ function AdminApp({ pass, onLogout }) {
             rowInicial={modal.row}
             esNuevo={modal.esNuevo}
             data={data}
+            pass={pass}
             onCancelar={() => setModal(null)}
             onGuardar={async (row) => {
               try { await guardarFila(modal.tab, row); setModal(null); } catch (e) { /* el error ya se muestra */ }
@@ -1599,7 +1662,7 @@ function AdminApp({ pass, onLogout }) {
 }
 
 // ----- Formulario dentro del modal (decide que form mostrar) -----
-function FormularioModal({ tab, rowInicial, data, onCancelar, onGuardar, esNuevo = true }) {
+function FormularioModal({ tab, rowInicial, data, pass, onCancelar, onGuardar, esNuevo = true }) {
   const [row, setRow] = useState(rowInicial);
   const [enviando, setEnviando] = useState(false);
 
@@ -1625,9 +1688,9 @@ function FormularioModal({ tab, rowInicial, data, onCancelar, onGuardar, esNuevo
       {tab === "Inversionistas" && <InversionistaForm value={row} onChange={setRow} />}
       {tab === "Proyectos" && <ProyectoForm value={row} onChange={setRow} />}
       {tab === "Inversiones" && <InversionForm value={row} onChange={setRow} inversionistas={data.Inversionistas} proyectos={data.Proyectos} esNuevo={esNuevo} />}
-      {tab === "Aportaciones" && <AportacionForm value={row} onChange={setRow} />}
+      {tab === "Aportaciones" && <AportacionForm value={row} onChange={setRow} pass={pass} />}
       {tab === "Documentos" && <DocumentoForm value={row} onChange={setRow} />}
-      {tab === "Avances" && <AvanceForm value={row} onChange={setRow} />}
+      {tab === "Avances" && <AvanceForm value={row} onChange={setRow} pass={pass} />}
       {tab === "Bitacora" && <BitacoraForm value={row} onChange={setRow} />}
 
       <div className="flex justify-end gap-2 mt-6 pt-4 border-t border-slate-100">
@@ -2011,7 +2074,7 @@ function DetalleInversion({
                   {av.tipo === "video" ? (
                     <div className="w-full h-full flex items-center justify-center" style={{ background: "#1a1409" }}><PlayCircle size={30} style={{ color: "#d4be8a" }} /></div>
                   ) : (
-                    <img src={av.url} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover" />
+                    <img src={driveImg(av.url)} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover" />
                   )}
                 </div>
                 <div className="p-2">
@@ -2233,7 +2296,8 @@ function InvestorApp({ clave, onLogout }) {
                         <div className="mt-3 rounded-xl border border-slate-200 p-3 space-y-2">
                           <div className="text-sm font-medium text-slate-700">Reportar mi pago</div>
                           <Input value={refDraft} onChange={(e) => setRefDraft(e.target.value)} placeholder="Numero de referencia / clave de rastreo" autoFocus />
-                          <Input value={compDraft} onChange={(e) => setCompDraft(e.target.value)} placeholder="Link del comprobante (Drive, foto) — opcional" />
+                          <FileUpload auth={{ clave }} onSubido={(url) => setCompDraft(url)} nota="Sube la foto de tu comprobante (o pega el link abajo)." />
+                          <Input value={compDraft} onChange={(e) => setCompDraft(e.target.value)} placeholder="Link del comprobante (se llena solo al subir)" />
                           <div className="flex items-center gap-2">
                             <Btn variant="gold" disabled={!refDraft && !compDraft} onClick={() => enviarReporte(proximo.id)}><Check size={15} /> Enviar reporte</Btn>
                             <button onClick={() => setReportando(null)} className="text-sm text-slate-500 px-2">Cancelar</button>
@@ -2270,7 +2334,7 @@ function InvestorApp({ clave, onLogout }) {
                                 <PlayCircle size={36} style={{ color: "#d4be8a" }} />
                               </div>
                             ) : (
-                              <img src={av.url} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover group-hover:scale-105 transition" />
+                              <img src={driveImg(av.url)} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover group-hover:scale-105 transition" />
                             )}
                             <div className="absolute inset-x-0 bottom-0 p-2" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.72), transparent)" }}>
                               <div className="text-[11px] text-white font-medium leading-tight truncate">{av.titulo}</div>
