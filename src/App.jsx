@@ -20,7 +20,7 @@ const ADMIN_KEY = "codeyod-admin-v1";       // bandera de sesion admin + pass te
 const INVESTOR_KEY = "codeyod-investor-v1"; // bandera de sesion inversionista + clave tecleada
 const CACHE_KEY = "codeyod-cache-v1";       // respaldo de getAll para arranque offline
 
-const TABS = ["Inversionistas", "Proyectos", "Inversiones", "Aportaciones", "Documentos"];
+const TABS = ["Inversionistas", "Proyectos", "Inversiones", "Aportaciones", "Documentos", "Avances", "Bitacora"];
 // Singular legible de cada pestana para los titulos de los modales.
 const SINGULAR_TAB = { Inversionistas: "Codesarrollador", Proyectos: "proyecto", Inversiones: "inversion", Aportaciones: "aportacion", Documentos: "documento", Avances: "avance", Bitacora: "nota" };
 const TASA_DEFAULT = 25;
@@ -321,7 +321,7 @@ function Btn({ children, variant = "primary", className = "", ...rest }) {
     outline: "border border-slate-300 text-slate-700 hover:bg-slate-50 bg-white",
     danger: "bg-red-600 text-white hover:bg-red-500",
     success: "bg-emerald-600 text-white hover:bg-emerald-500",
-    gold: "bg-amber-500 text-white hover:bg-amber-400",
+    gold: "bg-[#c9a96e] text-[#1a1409] hover:bg-[#d4be8a]",
   };
   return <button className={`${base} ${variants[variant]} ${className}`} {...rest}>{children}</button>;
 }
@@ -538,7 +538,7 @@ function LoginGate({ onAdmin, onInvestor }) {
               <Btn type="submit" variant="gold" disabled={cargando || (BACKEND_LISTO && !clave)} className="w-full">
                 {cargando ? <Spinner /> : <KeyRound size={16} />} Ver mi cartera
               </Btn>
-              <button type="button" onClick={() => { setModo("recuperar"); setError(""); setRecOk(false); setEmail(""); }} className="w-full text-center text-xs text-slate-400 hover:text-amber-600 transition">¿Olvidaste tu clave?</button>
+              <button type="button" onClick={() => { setModo("recuperar"); setError(""); setRecOk(false); setEmail(""); }} className="w-full text-center text-xs text-slate-400 hover:text-[#b8965a] transition">¿Olvidaste tu clave?</button>
             </form>
           )}
 
@@ -583,6 +583,7 @@ function KpiCard({ icon: Icon, label, value, sub, tone = "slate", alert = false 
     slate: "from-slate-50 to-white border-slate-200 text-slate-700",
     green: "from-emerald-50 to-white border-emerald-200 text-emerald-700",
     amber: "from-amber-50 to-white border-amber-200 text-amber-700",
+    gold: "from-[#f5efdf] to-white border-[#e6d6b0] text-[#7a5e1e]",
     blue: "from-blue-50 to-white border-blue-200 text-blue-700",
     red: "from-red-50 to-white border-red-200 text-red-700",
   };
@@ -737,14 +738,8 @@ function Calculadora({ capitalInicial = 1000000, fechaInicio = todayISO(), tasaI
 function InversionistaForm({ value, onChange }) {
   const [verClave, setVerClave] = useState(false);
   const set = (k, v) => onChange({ ...value, [k]: v });
-  const generarClave = () => {
-    // 14 caracteres de un alfabeto de 31 (sin ambiguos) para dar mayor entropia
-    // y dificultar la fuerza bruta sobre la unica barrera del inversionista.
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let s = "";
-    for (let i = 0; i < 14; i++) s += chars[Math.floor(Math.random() * chars.length)];
-    set("claveAcceso", s);
-  };
+  // Reutiliza el generador global (formato XXXXX-XXXXX-XXXXX, igual que el asistente y el backend).
+  const generarClave = () => set("claveAcceso", generarClaveAcceso());
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -782,12 +777,15 @@ function InversionistaForm({ value, onChange }) {
   );
 }
 
+// Plantilla de ejemplo para el boton "rellenar" del formulario de proyecto.
+// Datos bancarios FICTICIOS a proposito: el repo es publico, los reales se
+// capturan a mano en el admin (viven solo en el Sheet privado).
 const EJEMPLO_PROYECTO = {
   nombre: "Casa Alysa",
   banco: "BBVA",
   beneficiario: "YODESARROLLO SAPI DE CV",
-  cuenta: "011628459",
-  clabe: "012760001186284598",
+  cuenta: "000000000",
+  clabe: "000000000000000000",
   conceptoBase: "Aportacion Casa Alysa - <Codesarrollador> - <Folio>",
   descripcion: "Coinversion inmobiliaria.",
   estado: "Abierto",
@@ -824,14 +822,14 @@ function ProyectoForm({ value, onChange }) {
             <Input value={value.beneficiario || ""} onChange={(e) => set("beneficiario", e.target.value)} placeholder="YODESARROLLO SAPI DE CV" />
           </Field>
           <Field label="Numero de cuenta">
-            <Input value={value.cuenta || ""} onChange={(e) => set("cuenta", e.target.value)} placeholder="011628459" />
+            <Input value={value.cuenta || ""} onChange={(e) => set("cuenta", e.target.value)} placeholder="Numero de cuenta" />
           </Field>
           <Field label="CLABE">
-            <Input value={value.clabe || ""} onChange={(e) => set("clabe", e.target.value)} placeholder="012760001186284598" />
+            <Input value={value.clabe || ""} onChange={(e) => set("clabe", e.target.value)} placeholder="CLABE de 18 digitos" />
           </Field>
         </div>
         <Field label="Concepto base sugerido" hint="Lo que el Codesarrollador pone al transferir.">
-          <Input value={value.conceptoBase || ""} onChange={(e) => set("conceptoBase", e.target.value)} placeholder="Aportacion Casa Alysa - <Inversionista> - <Folio>" />
+          <Input value={value.conceptoBase || ""} onChange={(e) => set("conceptoBase", e.target.value)} placeholder="Aportacion <Proyecto> - <Codesarrollador> - <Folio>" />
         </Field>
       </div>
 
@@ -923,6 +921,63 @@ function DocumentoForm({ value, onChange }) {
   );
 }
 
+function AvanceForm({ value, onChange }) {
+  const set = (k, v) => onChange({ ...value, [k]: v });
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Tipo">
+          <Select value={value.tipo || "foto"} onChange={(e) => set("tipo", e.target.value)}>
+            <option value="foto">Foto</option>
+            <option value="video">Video</option>
+          </Select>
+        </Field>
+        <Field label="Fecha">
+          <Input type="date" value={toDateInput(value.fecha) || todayISO()} onChange={(e) => set("fecha", e.target.value)} />
+        </Field>
+      </div>
+      <Field label="Titulo" hint="Ej. Colado de losa nivel 2">
+        <Input value={value.titulo || ""} onChange={(e) => set("titulo", e.target.value)} placeholder="Que se ve en la foto/video" />
+      </Field>
+      <Field label="Enlace de la foto o video" hint="Link de una imagen/Drive, o de YouTube para video.">
+        <Input value={value.url || ""} onChange={(e) => set("url", e.target.value)} placeholder="https://..." />
+      </Field>
+      <Field label="Descripcion (opcional)">
+        <Textarea rows={2} value={value.descripcion || ""} onChange={(e) => set("descripcion", e.target.value)} />
+      </Field>
+    </div>
+  );
+}
+
+function BitacoraForm({ value, onChange }) {
+  const set = (k, v) => onChange({ ...value, [k]: v });
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Field label="Fecha">
+          <Input type="date" value={toDateInput(value.fecha) || todayISO()} onChange={(e) => set("fecha", e.target.value)} />
+        </Field>
+        <Field label="Autor">
+          <Input value={value.autor || ""} onChange={(e) => set("autor", e.target.value)} placeholder="Ej. Sayri" />
+        </Field>
+        <Field label="Etiqueta">
+          <Select value={value.etiqueta || "Avance"} onChange={(e) => set("etiqueta", e.target.value)}>
+            <option>Avance</option>
+            <option>Respuesta</option>
+            <option>Alerta</option>
+          </Select>
+        </Field>
+      </div>
+      <Field label="Titulo (opcional)">
+        <Input value={value.titulo || ""} onChange={(e) => set("titulo", e.target.value)} placeholder="Resumen corto" />
+      </Field>
+      <Field label="Nota" hint="Lo que el asesor le quiere comunicar al Codesarrollador.">
+        <Textarea rows={3} value={value.nota || ""} onChange={(e) => set("nota", e.target.value)} />
+      </Field>
+    </div>
+  );
+}
+
 function AportacionForm({ value, onChange }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
   return (
@@ -946,6 +1001,7 @@ function AportacionForm({ value, onChange }) {
       </Field>
       <div className="rounded-xl bg-slate-50 border border-slate-100 p-3 space-y-3">
         <div className="text-xs font-medium text-slate-500">Registro del pago (cuando lo recibas y lo verifiques)</div>
+        {value.fechaReporte ? <div className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-2 py-1.5">El cliente reporto este pago el {fmtFecha(value.fechaReporte)}{value.referencia ? ` · folio: ${value.referencia}` : ""}. Verifica contra tu cuenta y pon la fecha recibida.</div> : null}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Fecha recibida" hint="Ponla cuando confirmes el deposito (vacio = aun no llega).">
             <Input type="date" value={toDateInput(value.fechaRecibida)} onChange={(e) => set("fechaRecibida", e.target.value)} />
@@ -1064,9 +1120,9 @@ function AdminApp({ pass, onLogout }) {
   const [data, setData] = useState(() => {
     try {
       const c = localStorage.getItem(CACHE_KEY);
-      return c ? JSON.parse(c) : { Inversionistas: [], Proyectos: [], Inversiones: [], Aportaciones: [], Documentos: [] };
+      return c ? JSON.parse(c) : { Inversionistas: [], Proyectos: [], Inversiones: [], Aportaciones: [], Documentos: [], Avances: [], Bitacora: [] };
     } catch (e) {
-      return { Inversionistas: [], Proyectos: [], Inversiones: [], Aportaciones: [], Documentos: [] };
+      return { Inversionistas: [], Proyectos: [], Inversiones: [], Aportaciones: [], Documentos: [], Avances: [], Bitacora: [] };
     }
   });
   const [vista, setVista] = useState("dashboard"); // dashboard | inversionistas | proyectos | inversiones | calculadora
@@ -1109,6 +1165,8 @@ function AdminApp({ pass, onLogout }) {
         Inversiones: arr(res.data?.Inversiones),
         Aportaciones: arr(res.data?.Aportaciones),
         Documentos: arr(res.data?.Documentos),
+        Avances: arr(res.data?.Avances),
+        Bitacora: arr(res.data?.Bitacora),
       };
       setData(limpia);
       // No persistimos claveAcceso ni notas en el cache local (datos sensibles).
@@ -1266,23 +1324,22 @@ function AdminApp({ pass, onLogout }) {
       Inversiones: { folio: "", inversionistaId: "", proyectoId: "", montoTotal: "", fechaInicio: todayISO(), fechaSalida: "", tasaAnual: TASA_DEFAULT, estado: "Activa", notas: "" },
       Aportaciones: { folio: "", numeroPago: "", totalPagos: "", concepto: "", fechaProgramada: "", monto: "", fechaRecibida: "", comprobanteUrl: "" },
       Documentos: { folio: "", tipo: "Contrato", nombre: "", url: "", fecha: todayISO() },
+      Avances: { folio: "", tipo: "foto", url: "", titulo: "", descripcion: "", fecha: todayISO() },
+      Bitacora: { folio: "", fecha: todayISO(), autor: "", etiqueta: "Avance", titulo: "", nota: "" },
     };
     setModal({ tab, row: { ...bases[tab], ...base }, esNuevo: true });
   };
 
   return (
-    <div className="min-h-screen bg-slate-100">
+    <div className="min-h-screen bg-[#f5f1ea]">
       <Toast toast={toast} />
 
       {/* Header */}
-      <header className="bg-slate-900 text-white sticky top-0 z-30">
+      <header className="text-white sticky top-0 z-30" style={{ background: "#1a1409" }}>
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-amber-500 flex items-center justify-center shrink-0">
-            <CircleDollarSign size={20} />
-          </div>
-          <div className="min-w-0">
-            <div className="font-semibold leading-tight truncate">Co-desarrolladores</div>
-            <div className="text-[11px] text-slate-400 leading-tight">Panel de administracion</div>
+          <img src={logoWhite} alt="YODESARROLLO.MX" className="h-6 w-auto shrink-0" style={{ mixBlendMode: "screen" }} />
+          <div className="min-w-0 hidden sm:block">
+            <div className="text-[11px] leading-tight tracking-[0.18em] uppercase" style={{ color: "#c9a96e" }}>Panel de administracion</div>
           </div>
           <div className="ml-auto flex items-center gap-2">
             <button
@@ -1318,7 +1375,7 @@ function AdminApp({ pass, onLogout }) {
                   key={n.id}
                   onClick={() => { setVista(n.id); setInversionAbierta(null); }}
                   className={`flex items-center gap-1.5 px-3 py-2.5 text-sm whitespace-nowrap border-b-2 transition ${
-                    activo ? "border-amber-500 text-white" : "border-transparent text-slate-400 hover:text-white"
+                    activo ? "border-[#c9a96e] text-white" : "border-transparent text-slate-400 hover:text-white"
                   }`}
                 >
                   <Icon size={16} /> {n.label}
@@ -1348,7 +1405,7 @@ function AdminApp({ pass, onLogout }) {
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
               <KpiCard icon={TrendingUp} label="Capital comprometido (activo)" value={money(kpis.totalComprometido)} tone="slate" />
               <KpiCard icon={CheckCircle2} label="Capital recibido" value={money(kpis.totalRecibido)} sub={`${kpis.recibidasCount} aportaciones`} tone="green" />
-              <KpiCard icon={Clock} label="Por recibir" value={money(kpis.porRecibir)} sub={`${kpis.pendientesCount} pendientes`} tone="amber" />
+              <KpiCard icon={Clock} label="Por recibir" value={money(kpis.porRecibir)} sub={`${kpis.pendientesCount} pendientes`} tone="gold" />
               <KpiCard icon={Users} label="Codesarrolladores" value={kpis.numInversionistas} tone="blue" />
               <KpiCard icon={Building2} label="Proyectos abiertos" value={kpis.numProyectos} tone="slate" />
               <KpiCard icon={AlertTriangle} label="Aportaciones vencidas" value={kpis.vencidas.length} tone="red" alert={kpis.vencidas.length > 0} />
@@ -1456,9 +1513,15 @@ function AdminApp({ pass, onLogout }) {
             onEliminarAportacion={(row) => setConfirm({ tab: "Aportaciones", key: row.id, msg: `Se eliminara el pago "${row.concepto || row.numeroPago}".` })}
             onMarcarRecibida={(row) => guardarFila("Aportaciones", { ...row, fechaRecibida: todayISO() })}
             onGuardarComprobante={(row, url) => guardarFila("Aportaciones", { ...row, comprobanteUrl: url })}
-            onGenerarPlanCasaAlysa={(folio) => generarPlanCasaAlysa(folio)}
+            onGenerarPlan={(folio) => generarPlanPagos(folio)}
             onNuevoDocumento={(folio) => nuevoRegistro("Documentos", { folio })}
             onEliminarDocumento={(row) => setConfirm({ tab: "Documentos", key: row.id, msg: `Se eliminara el documento "${row.nombre || row.tipo}".` })}
+            onNuevoAvance={(folio) => nuevoRegistro("Avances", { folio })}
+            onEditarAvance={(row) => setModal({ tab: "Avances", row: { ...row }, esNuevo: false })}
+            onEliminarAvance={(row) => setConfirm({ tab: "Avances", key: row.id, msg: `Se eliminara el avance "${row.titulo || row.tipo}".` })}
+            onNuevaNota={(folio) => nuevoRegistro("Bitacora", { folio })}
+            onEditarNota={(row) => setModal({ tab: "Bitacora", row: { ...row }, esNuevo: false })}
+            onEliminarNota={(row) => setConfirm({ tab: "Bitacora", key: row.id, msg: `Se eliminara la nota de bitacora.` })}
           />
         )}
 
@@ -1518,26 +1581,19 @@ function AdminApp({ pass, onLogout }) {
   );
 
   // Generador rapido de las 4 aportaciones del ejemplo Casa Alysa
-  async function generarPlanCasaAlysa(folio) {
+  async function generarPlanPagos(folio, n = 4) {
     const inv = arr(data.Inversiones).find(i => String(i.folio) === String(folio));
-    const baseFecha = inv && inv.fechaInicio ? parseDate(inv.fechaInicio) : parseDate(todayISO());
-    const sumaMes = (n) => {
-      const d = new Date(baseFecha.getTime());
-      d.setMonth(d.getMonth() + n);
-      const p = (x) => String(x).padStart(2, '0');
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    };
-    const plan = [
-      { numeroPago: 1, totalPagos: 4, concepto: "Aportacion inicial", monto: 350000, fechaProgramada: sumaMes(0) },
-      { numeroPago: 2, totalPagos: 4, concepto: "Aportacion 2 de 4", monto: 216667, fechaProgramada: sumaMes(1) },
-      { numeroPago: 3, totalPagos: 4, concepto: "Aportacion 3 de 4", monto: 216667, fechaProgramada: sumaMes(2) },
-      { numeroPago: 4, totalPagos: 4, concepto: "Aportacion final", monto: 216666, fechaProgramada: sumaMes(3) },
-    ];
+    if (!inv) return;
+    const total = num(inv.montoTotal);
+    const inicio = inv.fechaInicio || todayISO();
+    const cada = Math.round(total / n);
     try {
-      for (const p of plan) {
-        await guardarFila("Aportaciones", { ...p, folio, fechaRecibida: "", comprobanteUrl: "" });
+      for (let i = 0; i < n; i++) {
+        const monto = i === n - 1 ? total - cada * (n - 1) : cada;
+        const concepto = i === 0 ? "Aportacion inicial" : (i === n - 1 ? "Aportacion final" : `Aportacion ${i + 1} de ${n}`);
+        await guardarFila("Aportaciones", { folio, numeroPago: i + 1, totalPagos: n, concepto, monto, fechaProgramada: sumarMeses(inicio, i), fechaRecibida: "", comprobanteUrl: "", referencia: "", fechaReporte: "" });
       }
-      notificar("Plan de 4 aportaciones generado.", "ok");
+      notificar(`Plan de ${n} aportaciones generado.`, "ok");
     } catch (e) { /* error ya notificado */ }
   }
 }
@@ -1553,6 +1609,8 @@ function FormularioModal({ tab, rowInicial, data, onCancelar, onGuardar, esNuevo
     if (tab === "Proyectos") return !!(row.nombre && String(row.nombre).trim());
     if (tab === "Aportaciones") return !!(row.folio && row.monto);
     if (tab === "Documentos") return !!(row.folio && (row.nombre || row.url));
+    if (tab === "Avances") return !!(row.folio && row.url && (row.titulo || row.tipo));
+    if (tab === "Bitacora") return !!(row.folio && row.nota);
     return true;
   }, [tab, row]);
 
@@ -1569,6 +1627,8 @@ function FormularioModal({ tab, rowInicial, data, onCancelar, onGuardar, esNuevo
       {tab === "Inversiones" && <InversionForm value={row} onChange={setRow} inversionistas={data.Inversionistas} proyectos={data.Proyectos} esNuevo={esNuevo} />}
       {tab === "Aportaciones" && <AportacionForm value={row} onChange={setRow} />}
       {tab === "Documentos" && <DocumentoForm value={row} onChange={setRow} />}
+      {tab === "Avances" && <AvanceForm value={row} onChange={setRow} />}
+      {tab === "Bitacora" && <BitacoraForm value={row} onChange={setRow} />}
 
       <div className="flex justify-end gap-2 mt-6 pt-4 border-t border-slate-100">
         <Btn variant="outline" onClick={onCancelar}>Cancelar</Btn>
@@ -1726,7 +1786,7 @@ function ListaInversiones({ data, inversionistaPorId, proyectoPorId, capitalReci
                 return (
                   <tr key={inv.folio} className="border-t border-slate-100 hover:bg-slate-50">
                     <td className="px-4 py-3">
-                      <button onClick={() => onAbrir(inv.folio)} className="font-mono font-medium text-slate-800 hover:text-amber-600 inline-flex items-center gap-1">
+                      <button onClick={() => onAbrir(inv.folio)} className="font-mono font-medium text-slate-800 hover:text-[#b8965a] inline-flex items-center gap-1">
                         {inv.folio} <ChevronRight size={14} />
                       </button>
                     </td>
@@ -1761,7 +1821,8 @@ function ListaInversiones({ data, inversionistaPorId, proyectoPorId, capitalReci
 function DetalleInversion({
   folio, data, inversionistaPorId, proyectoPorId, aportacionesDeFolio, documentosDeFolio, capitalRecibido,
   onVolver, onEditarInversion, onNuevaAportacion, onEditarAportacion, onEliminarAportacion,
-  onMarcarRecibida, onGuardarComprobante, onGenerarPlanCasaAlysa, onNuevoDocumento, onEliminarDocumento,
+  onMarcarRecibida, onGuardarComprobante, onGenerarPlan, onNuevoDocumento, onEliminarDocumento,
+  onNuevoAvance, onEditarAvance, onEliminarAvance, onNuevaNota, onEditarNota, onEliminarNota,
 }) {
   const inv = arr(data.Inversiones).find(i => String(i.folio) === String(folio));
   const [compEdit, setCompEdit] = useState({}); // id -> url temporal
@@ -1779,6 +1840,8 @@ function DetalleInversion({
   const proyecto = proyectoPorId(inv.proyectoId);
   const aportaciones = aportacionesDeFolio(folio);
   const documentos = documentosDeFolio(folio);
+  const avances = arr(data.Avances).filter(a => String(a.folio) === String(folio)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  const bitacora = arr(data.Bitacora).filter(b => String(b.folio) === String(folio)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
   const recibido = capitalRecibido(folio);
   const monto = num(inv.montoTotal);
 
@@ -1804,7 +1867,7 @@ function DetalleInversion({
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KpiCard icon={TrendingUp} label="Monto total" value={money(monto)} tone="slate" />
         <KpiCard icon={CheckCircle2} label="Capital recibido" value={money(recibido)} sub={`Falta ${money(Math.max(0, monto - recibido))}`} tone="green" />
-        <KpiCard icon={Sparkles} label={`Rendimiento (${rend.dias} dias)`} value={pct(rend.rendimientoPct)} sub={inv.fechaSalida ? "a fecha de salida" : "estimado a hoy"} tone="amber" />
+        <KpiCard icon={Sparkles} label={`Rendimiento (${rend.dias} dias)`} value={pct(rend.rendimientoPct)} sub={inv.fechaSalida ? "a fecha de salida" : "estimado a hoy"} tone="gold" />
         <KpiCard icon={CircleDollarSign} label="Total a recibir (estimado)" value={money(rend.totalARecibir)} sub={`Ganancia ${money(rend.ganancia)}`} tone="blue" />
       </div>
 
@@ -1828,7 +1891,7 @@ function DetalleInversion({
           <h3 className="font-semibold text-slate-800 flex items-center gap-2"><Calendar size={18} /> Calendario de aportaciones</h3>
           <div className="flex gap-2">
             {aportaciones.length === 0 && (
-              <Btn variant="gold" onClick={() => onGenerarPlanCasaAlysa(folio)}><Sparkles size={15} /> Generar plan (4 pagos)</Btn>
+              <Btn variant="gold" onClick={() => onGenerarPlan(folio)}><Sparkles size={15} /> Generar plan (4 pagos)</Btn>
             )}
             <Btn variant="outline" onClick={() => onNuevaAportacion(folio)}><Plus size={15} /> Pago</Btn>
           </div>
@@ -1877,7 +1940,7 @@ function DetalleInversion({
                             className="w-36 rounded-md border border-slate-200 px-2 py-1 text-xs"
                           />
                           {a.comprobanteUrl ? (
-                            <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-amber-600"><ExternalLink size={14} /></a>
+                            <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a]"><ExternalLink size={14} /></a>
                           ) : null}
                         </div>
                       </td>
@@ -1924,8 +1987,73 @@ function DetalleInversion({
                   <div className="text-sm font-medium text-slate-700 truncate">{d.nombre || d.tipo}</div>
                   <div className="text-xs text-slate-400">{d.tipo} · {fmtFecha(d.fecha)}</div>
                 </div>
-                {d.url ? <a href={d.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-amber-600"><Link2 size={16} /></a> : null}
+                {d.url ? <a href={d.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a]"><Link2 size={16} /></a> : null}
                 <IconBtn onClick={() => onEliminarDocumento(d)} icon={Trash2} title="Eliminar" danger />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Avance de obra (fotos/videos que ve el Codesarrollador) */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><HardHat size={18} /> Avance de obra <span className="text-xs font-normal text-slate-400">(lo ve el Codesarrollador)</span></h3>
+          <Btn variant="outline" onClick={() => onNuevoAvance(folio)}><Plus size={15} /> Avance</Btn>
+        </div>
+        {avances.length === 0 ? (
+          <p className="text-sm text-slate-400">Sin avances. Sube fotos o videos del progreso (enlaces de Drive/YouTube).</p>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            {avances.map((av) => (
+              <div key={av.id} className="rounded-xl border border-slate-200 overflow-hidden">
+                <div className="relative aspect-[4/3] bg-slate-100">
+                  {av.tipo === "video" ? (
+                    <div className="w-full h-full flex items-center justify-center" style={{ background: "#1a1409" }}><PlayCircle size={30} style={{ color: "#d4be8a" }} /></div>
+                  ) : (
+                    <img src={av.url} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover" />
+                  )}
+                </div>
+                <div className="p-2">
+                  <div className="text-xs font-medium text-slate-700 truncate">{av.titulo || "(sin titulo)"}</div>
+                  <div className="text-[10px] text-slate-400">{fmtFecha(av.fecha)}</div>
+                  <div className="flex justify-end gap-1 mt-1">
+                    {av.url ? <a href={av.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a] p-1"><ExternalLink size={13} /></a> : null}
+                    <IconBtn onClick={() => onEditarAvance(av)} icon={Pencil} title="Editar" />
+                    <IconBtn onClick={() => onEliminarAvance(av)} icon={Trash2} title="Eliminar" danger />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Bitacora del asesor */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><MessageCircle size={18} /> Bitacora del asesor <span className="text-xs font-normal text-slate-400">(lo ve el Codesarrollador)</span></h3>
+          <Btn variant="outline" onClick={() => onNuevaNota(folio)}><Plus size={15} /> Nota</Btn>
+        </div>
+        {bitacora.length === 0 ? (
+          <p className="text-sm text-slate-400">Sin notas. Agrega actualizaciones o respuestas para el Codesarrollador.</p>
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {bitacora.map((b) => (
+              <li key={b.id} className="py-2.5 flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs text-slate-400">{fmtFecha(b.fecha)}</span>
+                    {b.etiqueta ? <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#7a5e1e" }}>{b.etiqueta}</span> : null}
+                    {b.autor ? <span className="text-[11px] text-slate-400">· {b.autor}</span> : null}
+                  </div>
+                  {b.titulo ? <div className="text-sm font-medium text-slate-700 mt-0.5">{b.titulo}</div> : null}
+                  <div className="text-sm text-slate-600">{b.nota}</div>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <IconBtn onClick={() => onEditarNota(b)} icon={Pencil} title="Editar" />
+                  <IconBtn onClick={() => onEliminarNota(b)} icon={Trash2} title="Eliminar" danger />
+                </div>
               </li>
             ))}
           </ul>
@@ -2066,7 +2194,7 @@ function InvestorApp({ clave, onLogout }) {
 
                     <div className="mt-5 text-left">
                       <div className="flex items-center justify-between text-[11px] mb-1.5" style={{ color: "rgba(255,255,255,0.55)" }}>
-                        <span>{pagosRecibidos} de {aps.length || num(iv.totalPagos) || 0} aportaciones</span>
+                        <span>{pagosRecibidos} de {aps.length} aportaciones</span>
                         <span>{money(recibido)} de {money(monto)}</span>
                       </div>
                       <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
@@ -2193,7 +2321,7 @@ function InvestorApp({ clave, onLogout }) {
                               <td className="py-2 text-slate-400 text-xs">{fmtFecha(a.fechaProgramada)}</td>
                               <td className="py-2 text-right tabular-nums font-medium text-slate-800">{money(a.monto)}</td>
                               <td className="py-2 text-right"><EstadoAportacionBadge ap={a} /></td>
-                              <td className="py-2 text-right">{a.comprobanteUrl ? <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-amber-600 inline-block"><ExternalLink size={14} /></a> : null}</td>
+                              <td className="py-2 text-right">{a.comprobanteUrl ? <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a] inline-block"><ExternalLink size={14} /></a> : null}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -2207,7 +2335,7 @@ function InvestorApp({ clave, onLogout }) {
                             <li key={d.id} className="flex items-center gap-2 text-sm">
                               <FileText size={14} className="text-slate-400 shrink-0" />
                               <span className="text-slate-600 truncate flex-1">{d.nombre || d.tipo}</span>
-                              {d.url ? <a href={d.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-amber-600"><Link2 size={15} /></a> : null}
+                              {d.url ? <a href={d.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a]"><Link2 size={15} /></a> : null}
                             </li>
                           ))}
                         </ul>
@@ -2224,48 +2352,33 @@ function InvestorApp({ clave, onLogout }) {
   );
 }
 
-function MiniKpi({ label, value, tone = "slate" }) {
-  const tones = {
-    slate: "text-slate-800",
-    green: "text-emerald-700",
-    amber: "text-amber-600",
-    blue: "text-blue-700",
-  };
-  return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5">
-      <div className="text-[10px] text-slate-400 leading-tight">{label}</div>
-      <div className={`text-sm font-semibold tabular-nums ${tones[tone]}`}>{value}</div>
-    </div>
-  );
-}
-
 // ===================================================================
 // APP RAIZ — maneja la sesion
 // ===================================================================
 export default function App() {
   const [sesion, setSesion] = useState(() => {
     try {
-      const a = localStorage.getItem(ADMIN_KEY);
+      const a = sessionStorage.getItem(ADMIN_KEY);
       if (a) { const o = JSON.parse(a); if (o && o.pass) return { rol: "admin", pass: o.pass }; }
-      const i = localStorage.getItem(INVESTOR_KEY);
+      const i = sessionStorage.getItem(INVESTOR_KEY);
       if (i) { const o = JSON.parse(i); if (o && o.clave) return { rol: "investor", clave: o.clave }; }
     } catch (e) { /* noop */ }
     return null;
   });
 
   const entrarAdmin = useCallback((pass) => {
-    try { localStorage.setItem(ADMIN_KEY, JSON.stringify({ sesion: true, pass })); } catch (e) { /* noop */ }
+    try { sessionStorage.setItem(ADMIN_KEY, JSON.stringify({ sesion: true, pass })); } catch (e) { /* noop */ }
     setSesion({ rol: "admin", pass });
   }, []);
 
   const entrarInversionista = useCallback((clave) => {
-    try { localStorage.setItem(INVESTOR_KEY, JSON.stringify({ sesion: true, clave })); } catch (e) { /* noop */ }
+    try { sessionStorage.setItem(INVESTOR_KEY, JSON.stringify({ sesion: true, clave })); } catch (e) { /* noop */ }
     setSesion({ rol: "investor", clave });
   }, []);
 
   const salir = useCallback(() => {
     // Limpiamos tambien el cache local para no dejar datos sensibles tras cerrar sesion.
-    try { localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(INVESTOR_KEY); localStorage.removeItem(CACHE_KEY); } catch (e) { /* noop */ }
+    try { sessionStorage.removeItem(ADMIN_KEY); sessionStorage.removeItem(INVESTOR_KEY); localStorage.removeItem(CACHE_KEY); } catch (e) { /* noop */ }
     setSesion(null);
   }, []);
 
