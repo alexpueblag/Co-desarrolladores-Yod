@@ -46,7 +46,7 @@ const TABS = {
   },
   Proyectos: {
     keyField: 'id',
-    headers: ['id', 'nombre', 'banco', 'beneficiario', 'cuenta', 'clabe', 'conceptoBase', 'descripcion', 'estado', 'creado'],
+    headers: ['id', 'nombre', 'tipo', 'etapaActual', 'banco', 'beneficiario', 'cuenta', 'clabe', 'conceptoBase', 'descripcion', 'estado', 'creado'],
     prefix: 'PRY-'
   },
   Inversiones: {
@@ -66,12 +66,12 @@ const TABS = {
   },
   Avances: {
     keyField: 'id',
-    headers: ['id', 'folio', 'tipo', 'url', 'titulo', 'descripcion', 'fecha', 'creado'],
+    headers: ['id', 'proyectoId', 'tipo', 'etapa', 'url', 'titulo', 'descripcion', 'fecha', 'creado'],
     prefix: 'AVN-'
   },
   Bitacora: {
     keyField: 'id',
-    headers: ['id', 'folio', 'fecha', 'autor', 'etiqueta', 'titulo', 'nota', 'creado'],
+    headers: ['id', 'proyectoId', 'fecha', 'autor', 'etiqueta', 'titulo', 'nota', 'creado'],
     prefix: 'BIT-'
   }
 };
@@ -461,12 +461,13 @@ function getMine(body) {
     return misProyectoIds[String(p.id).trim()] === true;
   });
 
-  // 6) Avances (fotos/videos) y bitacora (seguimiento del asesor) de esos folios.
+  // 6) Avances (fotos/videos) y bitacora (seguimiento del asesor): ahora viven
+  //    a nivel PROYECTO, asi que se filtran por los proyectoId del codesarrollador.
   const misAvances = leerHoja('Avances').filter(function (a) {
-    return misFolios[String(a.folio).trim()] === true;
+    return misProyectoIds[String(a.proyectoId).trim()] === true;
   });
   const miBitacora = leerHoja('Bitacora').filter(function (b) {
-    return misFolios[String(b.folio).trim()] === true;
+    return misProyectoIds[String(b.proyectoId).trim()] === true;
   });
 
   return jsonResponse({

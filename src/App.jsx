@@ -23,6 +23,10 @@ const CACHE_KEY = "codeyod-cache-v1";       // respaldo de getAll para arranque 
 const TABS = ["Inversionistas", "Proyectos", "Inversiones", "Aportaciones", "Documentos", "Avances", "Bitacora"];
 // Singular legible de cada pestana para los titulos de los modales.
 const SINGULAR_TAB = { Inversionistas: "Codesarrollador", Proyectos: "proyecto", Inversiones: "inversion", Aportaciones: "aportacion", Documentos: "documento", Avances: "avance", Bitacora: "nota" };
+
+// Tipos de proyecto y etapas sugeridas (flexibles: sirven para obra y desarrollo urbano).
+const TIPOS_PROYECTO = ["Obra", "Desarrollo urbano", "Lotificacion", "Otro"];
+const ETAPAS_SUGERIDAS = ["Permisos", "Urbanizacion", "Cimentacion", "Estructura", "Acabados", "Comercializacion", "Entrega"];
 const TASA_DEFAULT = 25;
 
 // ===================================================================
@@ -170,7 +174,7 @@ const BACKEND_LISTO = APPS_SCRIPT_URL && !APPS_SCRIPT_URL.startsWith("PEGA_AQUI"
 // En cuanto pegues la URL real del Apps Script, esto se ignora por completo.
 const DEMO_DATA = {
   inversionista: { id: "demo", nombre: "Juan Perez", email: "juan@ejemplo.mx", telefono: "" },
-  proyectos: [{ id: "proy-demo", nombre: "Residencial Demo", banco: "Banco (ejemplo)", beneficiario: "YODESARROLLO SAPI DE CV", cuenta: "000000000", clabe: "000000000000000000", conceptoBase: "Aportacion Residencial Demo - <Codesarrollador> - <Folio>", estado: "Abierto" }],
+  proyectos: [{ id: "proy-demo", nombre: "Residencial Demo", tipo: "Obra", etapaActual: "Construccion", banco: "Banco (ejemplo)", beneficiario: "YODESARROLLO SAPI DE CV", cuenta: "000000000", clabe: "000000000000000000", conceptoBase: "Aportacion Residencial Demo - <Codesarrollador> - <Folio>", estado: "Abierto" }],
   inversiones: [{ folio: "DEMO-2026-01", inversionistaId: "demo", proyectoId: "proy-demo", montoTotal: 1000000, fechaInicio: "2026-03-06", fechaSalida: "", tasaAnual: 25, estado: "Activa" }],
   aportaciones: [
     { id: "d-a1", folio: "DEMO-2026-01", numeroPago: 1, totalPagos: 4, concepto: "Aportacion inicial", fechaProgramada: "2026-03-06", monto: 350000, fechaRecibida: "2026-03-06", comprobanteUrl: "" },
@@ -180,15 +184,15 @@ const DEMO_DATA = {
   ],
   documentos: [{ id: "d-doc1", folio: "DEMO-2026-01", tipo: "Contrato", nombre: "Promesa de Pago (ejemplo)", url: "", fecha: "2026-03-06" }],
   avances: [
-    { id: "av1", folio: "DEMO-2026-01", tipo: "foto", url: "https://picsum.photos/seed/obra-cimentacion/600/450", titulo: "Cimentacion terminada", fecha: "2026-03-20" },
-    { id: "av2", folio: "DEMO-2026-01", tipo: "foto", url: "https://picsum.photos/seed/obra-estructura/600/450", titulo: "Estructura nivel 1", fecha: "2026-04-18" },
-    { id: "av3", folio: "DEMO-2026-01", tipo: "video", url: "https://youtu.be/ejemplo", titulo: "Recorrido en obra", fecha: "2026-05-10" },
-    { id: "av4", folio: "DEMO-2026-01", tipo: "foto", url: "https://picsum.photos/seed/obra-losa/600/450", titulo: "Colado de losa nivel 2", fecha: "2026-05-28" },
+    { id: "av1", proyectoId: "proy-demo", tipo: "foto", etapa: "Cimentacion", url: "https://picsum.photos/seed/obra-cimentacion/600/450", titulo: "Cimentacion terminada", fecha: "2026-03-20" },
+    { id: "av2", proyectoId: "proy-demo", tipo: "foto", etapa: "Estructura", url: "https://picsum.photos/seed/obra-estructura/600/450", titulo: "Estructura nivel 1", fecha: "2026-04-18" },
+    { id: "av3", proyectoId: "proy-demo", tipo: "video", etapa: "Estructura", url: "https://youtu.be/ejemplo", titulo: "Recorrido en obra", fecha: "2026-05-10" },
+    { id: "av4", proyectoId: "proy-demo", tipo: "foto", etapa: "Estructura", url: "https://picsum.photos/seed/obra-losa/600/450", titulo: "Colado de losa nivel 2", fecha: "2026-05-28" },
   ],
   bitacora: [
-    { id: "b1", folio: "DEMO-2026-01", fecha: "2026-05-28", autor: "Sayri", etiqueta: "Avance", titulo: "Losa del nivel 2 colada", nota: "Esta semana completamos el colado de la losa del segundo nivel. Vamos en tiempo con el plan de obra." },
-    { id: "b2", folio: "DEMO-2026-01", fecha: "2026-05-12", autor: "Sayri", etiqueta: "Respuesta", titulo: "", nota: "Juan, sobre tu pregunta de los acabados: la seleccion de pisos la vemos juntos en la visita del proximo mes." },
-    { id: "b3", folio: "DEMO-2026-01", fecha: "2026-04-18", autor: "Sayri", etiqueta: "Avance", titulo: "Estructura del nivel 1 lista", nota: "Terminamos la estructura del primer nivel. Te subimos fotos nuevas a tu galeria de avance." },
+    { id: "b1", proyectoId: "proy-demo", fecha: "2026-05-28", autor: "Sayri", etiqueta: "Avance", titulo: "Losa del nivel 2 colada", nota: "Esta semana completamos el colado de la losa del segundo nivel. Vamos en tiempo con el plan de obra." },
+    { id: "b2", proyectoId: "proy-demo", fecha: "2026-05-12", autor: "Sayri", etiqueta: "Respuesta", titulo: "", nota: "Juan, sobre tu pregunta de los acabados: la seleccion de pisos la vemos juntos en la visita del proximo mes." },
+    { id: "b3", proyectoId: "proy-demo", fecha: "2026-04-18", autor: "Sayri", etiqueta: "Avance", titulo: "Estructura del nivel 1 lista", nota: "Terminamos la estructura del primer nivel. Te subimos fotos nuevas a tu galeria de avance." },
   ],
 };
 
@@ -842,6 +846,8 @@ function InversionistaForm({ value, onChange }) {
 // capturan a mano en el admin (viven solo en el Sheet privado).
 const EJEMPLO_PROYECTO = {
   nombre: "Casa Alysa",
+  tipo: "Obra",
+  etapaActual: "Construccion",
   banco: "BBVA",
   beneficiario: "YODESARROLLO SAPI DE CV",
   cuenta: "000000000",
@@ -864,6 +870,18 @@ function ProyectoForm({ value, onChange }) {
             <option>Abierto</option>
             <option>Cerrado</option>
           </Select>
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Tipo de proyecto">
+          <Select value={value.tipo || "Obra"} onChange={(e) => set("tipo", e.target.value)}>
+            {TIPOS_PROYECTO.map((t) => <option key={t}>{t}</option>)}
+          </Select>
+        </Field>
+        <Field label="Etapa actual" hint="Permisos, urbanizacion, construccion...">
+          <Input list="dl-etapas-proy" value={value.etapaActual || ""} onChange={(e) => set("etapaActual", e.target.value)} placeholder="Etapa actual" />
+          <datalist id="dl-etapas-proy">{ETAPAS_SUGERIDAS.map((et) => <option key={et} value={et} />)}</datalist>
         </Field>
       </div>
 
@@ -983,25 +1001,32 @@ function DocumentoForm({ value, onChange }) {
 
 function AvanceForm({ value, onChange, pass }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
+  const esDoc = value.tipo === "documento";
+  const esVideo = value.tipo === "video";
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Field label="Tipo">
           <Select value={value.tipo || "foto"} onChange={(e) => set("tipo", e.target.value)}>
             <option value="foto">Foto</option>
             <option value="video">Video</option>
+            <option value="documento">Documento</option>
           </Select>
+        </Field>
+        <Field label="Etapa" hint="Permisos, urbanizacion...">
+          <Input list="dl-etapas" value={value.etapa || ""} onChange={(e) => set("etapa", e.target.value)} placeholder="Etapa del proyecto" />
+          <datalist id="dl-etapas">{ETAPAS_SUGERIDAS.map((et) => <option key={et} value={et} />)}</datalist>
         </Field>
         <Field label="Fecha">
           <Input type="date" value={toDateInput(value.fecha) || todayISO()} onChange={(e) => set("fecha", e.target.value)} />
         </Field>
       </div>
-      <Field label="Titulo" hint="Ej. Colado de losa nivel 2">
-        <Input value={value.titulo || ""} onChange={(e) => set("titulo", e.target.value)} placeholder="Que se ve en la foto/video" />
+      <Field label="Titulo" hint="Ej. Colado de losa / Permiso de uso de suelo">
+        <Input value={value.titulo || ""} onChange={(e) => set("titulo", e.target.value)} placeholder="Que se ve / que documento es" />
       </Field>
-      <Field label="Foto o video" hint="Sube una foto (arrastra o busca), o pega un enlace (Drive / YouTube para video).">
-        {value.tipo !== "video" ? <FileUpload auth={{ pass }} onSubido={(url) => set("url", url)} accept="image/*" nota="Para fotos. Para video, pega el enlace de YouTube abajo." /> : null}
-        <Input value={value.url || ""} onChange={(e) => set("url", e.target.value)} placeholder="https://... (se llena solo al subir foto)" className="mt-2" />
+      <Field label={esVideo ? "Enlace del video" : esDoc ? "Documento" : "Foto"} hint={esVideo ? "Pega el enlace de YouTube." : "Sube el archivo (arrastra o busca) o pega un enlace."}>
+        {!esVideo ? <FileUpload auth={{ pass }} onSubido={(url) => set("url", url)} accept={esDoc ? "image/*,application/pdf" : "image/*"} nota={esDoc ? "Foto o PDF, se guarda en tu Drive." : "Foto, se guarda en tu Drive."} /> : null}
+        <Input value={value.url || ""} onChange={(e) => set("url", e.target.value)} placeholder="https://... (se llena solo al subir)" className="mt-2" />
       </Field>
       <Field label="Descripcion (opcional)">
         <Textarea rows={2} value={value.descripcion || ""} onChange={(e) => set("descripcion", e.target.value)} />
@@ -1089,7 +1114,7 @@ function AportacionForm({ value, onChange, pass }) {
 // ===================================================================
 function WizardAlta({ proyectos, onCrear, onClose }) {
   const [d, setD] = useState({ nombre: "", email: "", telefono: "", proyectoId: "", folio: "", montoTotal: "", fechaInicio: todayISO(), numPagos: 4, primerPago: "", tasaAnual: 25 });
-  const [nuevoProy, setNuevoProy] = useState({ nombre: "", banco: "", beneficiario: "YODESARROLLO SAPI DE CV", cuenta: "", clabe: "", conceptoBase: "" });
+  const [nuevoProy, setNuevoProy] = useState({ nombre: "", tipo: "Obra", etapaActual: "", banco: "", beneficiario: "YODESARROLLO SAPI DE CV", cuenta: "", clabe: "", conceptoBase: "" });
   const [usarNuevoProy, setUsarNuevoProy] = useState(arr(proyectos).length === 0);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
@@ -1193,6 +1218,7 @@ function AdminApp({ pass, onLogout }) {
   const [error, setError] = useState("");
   const [toast, setToast] = useState(null);
   const [inversionAbierta, setInversionAbierta] = useState(null); // folio
+  const [proyectoAbierto, setProyectoAbierto] = useState(null); // proyectoId
   const [modal, setModal] = useState(null); // { tab, row } para crear/editar
   const [confirm, setConfirm] = useState(null); // { tab, key, msg }
   const [wizard, setWizard] = useState(false); // asistente "Nuevo Codesarrollador"
@@ -1386,8 +1412,8 @@ function AdminApp({ pass, onLogout }) {
       Inversiones: { folio: "", inversionistaId: "", proyectoId: "", montoTotal: "", fechaInicio: todayISO(), fechaSalida: "", tasaAnual: TASA_DEFAULT, estado: "Activa", notas: "" },
       Aportaciones: { folio: "", numeroPago: "", totalPagos: "", concepto: "", fechaProgramada: "", monto: "", fechaRecibida: "", comprobanteUrl: "" },
       Documentos: { folio: "", tipo: "Contrato", nombre: "", url: "", fecha: todayISO() },
-      Avances: { folio: "", tipo: "foto", url: "", titulo: "", descripcion: "", fecha: todayISO() },
-      Bitacora: { folio: "", fecha: todayISO(), autor: "", etiqueta: "Avance", titulo: "", nota: "" },
+      Avances: { proyectoId: "", tipo: "foto", etapa: "", url: "", titulo: "", descripcion: "", fecha: todayISO() },
+      Bitacora: { proyectoId: "", fecha: todayISO(), autor: "", etiqueta: "Avance", titulo: "", nota: "" },
     };
     setModal({ tab, row: { ...bases[tab], ...base }, esNuevo: true });
   };
@@ -1435,7 +1461,7 @@ function AdminApp({ pass, onLogout }) {
               return (
                 <button
                   key={n.id}
-                  onClick={() => { setVista(n.id); setInversionAbierta(null); }}
+                  onClick={() => { setVista(n.id); setInversionAbierta(null); setProyectoAbierto(null); }}
                   className={`flex items-center gap-1.5 px-3 py-2.5 text-sm whitespace-nowrap border-b-2 transition ${
                     activo ? "border-[#c9a96e] text-white" : "border-transparent text-slate-400 hover:text-white"
                   }`}
@@ -1536,12 +1562,29 @@ function AdminApp({ pass, onLogout }) {
         )}
 
         {/* ---------- PROYECTOS ---------- */}
-        {vista === "proyectos" && (
+        {vista === "proyectos" && !proyectoAbierto && (
           <ListaProyectos
             data={data}
             onNuevo={() => nuevoRegistro("Proyectos")}
+            onAbrir={(id) => setProyectoAbierto(id)}
             onEditar={(row) => setModal({ tab: "Proyectos", row: { ...row }, esNuevo: false })}
             onEliminar={(row) => setConfirm({ tab: "Proyectos", key: row.id, msg: `Se eliminara el proyecto "${row.nombre}".` })}
+          />
+        )}
+        {vista === "proyectos" && proyectoAbierto && (
+          <ProyectoDetalle
+            proyectoId={proyectoAbierto}
+            data={data}
+            inversionistaPorId={inversionistaPorId}
+            onVolver={() => setProyectoAbierto(null)}
+            onEditarProyecto={(row) => setModal({ tab: "Proyectos", row: { ...row }, esNuevo: false })}
+            onAbrirInversion={(folio) => { setProyectoAbierto(null); setVista("inversiones"); setInversionAbierta(folio); }}
+            onNuevoAvance={(proyectoId) => nuevoRegistro("Avances", { proyectoId })}
+            onEditarAvance={(row) => setModal({ tab: "Avances", row: { ...row }, esNuevo: false })}
+            onEliminarAvance={(row) => setConfirm({ tab: "Avances", key: row.id, msg: `Se eliminara el avance "${row.titulo || row.tipo}".` })}
+            onNuevaNota={(proyectoId) => nuevoRegistro("Bitacora", { proyectoId })}
+            onEditarNota={(row) => setModal({ tab: "Bitacora", row: { ...row }, esNuevo: false })}
+            onEliminarNota={(row) => setConfirm({ tab: "Bitacora", key: row.id, msg: `Se eliminara la nota de bitacora.` })}
           />
         )}
 
@@ -1578,12 +1621,7 @@ function AdminApp({ pass, onLogout }) {
             onGenerarPlan={(folio) => generarPlanPagos(folio)}
             onNuevoDocumento={(folio) => nuevoRegistro("Documentos", { folio })}
             onEliminarDocumento={(row) => setConfirm({ tab: "Documentos", key: row.id, msg: `Se eliminara el documento "${row.nombre || row.tipo}".` })}
-            onNuevoAvance={(folio) => nuevoRegistro("Avances", { folio })}
-            onEditarAvance={(row) => setModal({ tab: "Avances", row: { ...row }, esNuevo: false })}
-            onEliminarAvance={(row) => setConfirm({ tab: "Avances", key: row.id, msg: `Se eliminara el avance "${row.titulo || row.tipo}".` })}
-            onNuevaNota={(folio) => nuevoRegistro("Bitacora", { folio })}
-            onEditarNota={(row) => setModal({ tab: "Bitacora", row: { ...row }, esNuevo: false })}
-            onEliminarNota={(row) => setConfirm({ tab: "Bitacora", key: row.id, msg: `Se eliminara la nota de bitacora.` })}
+            onAbrirProyecto={(proyectoId) => { setInversionAbierta(null); setVista("proyectos"); setProyectoAbierto(proyectoId); }}
           />
         )}
 
@@ -1672,8 +1710,8 @@ function FormularioModal({ tab, rowInicial, data, pass, onCancelar, onGuardar, e
     if (tab === "Proyectos") return !!(row.nombre && String(row.nombre).trim());
     if (tab === "Aportaciones") return !!(row.folio && row.monto);
     if (tab === "Documentos") return !!(row.folio && (row.nombre || row.url));
-    if (tab === "Avances") return !!(row.folio && row.url && (row.titulo || row.tipo));
-    if (tab === "Bitacora") return !!(row.folio && row.nota);
+    if (tab === "Avances") return !!(row.proyectoId && row.url && (row.titulo || row.tipo));
+    if (tab === "Bitacora") return !!(row.proyectoId && row.nota);
     return true;
   }, [tab, row]);
 
@@ -1759,7 +1797,7 @@ function ListaInversionistas({ data, onNuevo, onEditar, onEliminar }) {
 }
 
 // ----- Lista de proyectos -----
-function ListaProyectos({ data, onNuevo, onEditar, onEliminar }) {
+function ListaProyectos({ data, onNuevo, onAbrir, onEditar, onEliminar }) {
   const lista = arr(data.Proyectos);
   return (
     <div>
@@ -1781,6 +1819,7 @@ function ListaProyectos({ data, onNuevo, onEditar, onEliminar }) {
                       ? <Badge tone="green">Abierto</Badge>
                       : <Badge tone="gray">Cerrado</Badge>}
                   </div>
+                  <div className="text-xs text-slate-400 mt-0.5">{p.tipo || "Obra"}{p.etapaActual ? ` · etapa: ${p.etapaActual}` : ""}</div>
                   {p.descripcion ? <div className="text-xs text-slate-400 mt-0.5">{p.descripcion}</div> : null}
                 </div>
                 <div className="flex gap-1 shrink-0">
@@ -1796,6 +1835,7 @@ function ListaProyectos({ data, onNuevo, onEditar, onEliminar }) {
                 <DatoBanco label="CLABE" valor={p.clabe} copiable mono />
                 {p.conceptoBase ? <DatoBanco label="Concepto" valor={p.conceptoBase} /> : null}
               </div>
+              <Btn variant="outline" className="w-full mt-3" onClick={() => onAbrir(p.id)}><HardHat size={15} /> Abrir tablero (avances, bitacora, codesarrolladores)</Btn>
             </div>
           ))}
         </div>
@@ -1881,11 +1921,144 @@ function ListaInversiones({ data, inversionistaPorId, proyectoPorId, capitalReci
 }
 
 // ----- Detalle de una inversion -----
+// ===================================================================
+// TABLERO DE PROYECTO — gestiona avances y bitacora a NIVEL PROYECTO
+// (los comparten todos los codesarrolladores de ese proyecto)
+// ===================================================================
+function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEditarProyecto, onAbrirInversion, onNuevoAvance, onEditarAvance, onEliminarAvance, onNuevaNota, onEditarNota, onEliminarNota }) {
+  const p = arr(data.Proyectos).find(x => String(x.id) === String(proyectoId));
+  if (!p) {
+    return (<div><Btn variant="outline" onClick={onVolver}><ArrowLeft size={16} /> Proyectos</Btn><p className="text-sm text-slate-500 mt-4">No se encontro el proyecto.</p></div>);
+  }
+  const inversiones = arr(data.Inversiones).filter(i => String(i.proyectoId) === String(proyectoId));
+  const avances = arr(data.Avances).filter(a => String(a.proyectoId) === String(proyectoId)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  const bitacora = arr(data.Bitacora).filter(b => String(b.proyectoId) === String(proyectoId)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <Btn variant="outline" onClick={onVolver}><ArrowLeft size={16} /> Proyectos</Btn>
+        <Btn variant="outline" onClick={() => onEditarProyecto(p)}><Pencil size={15} /> Editar proyecto</Btn>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+        <div className="flex items-center gap-2 flex-wrap">
+          <h2 className="text-xl font-semibold text-slate-800">{p.nombre || "(sin nombre)"}</h2>
+          {(p.estado || "Abierto") === "Abierto" ? <Badge tone="green">Abierto</Badge> : <Badge tone="gray">Cerrado</Badge>}
+          <Badge tone="slate">{p.tipo || "Obra"}</Badge>
+          {p.etapaActual ? <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#7a5e1e" }}>Etapa: {p.etapaActual}</span> : null}
+        </div>
+        {p.descripcion ? <div className="text-sm text-slate-500 mt-1">{p.descripcion}</div> : null}
+        <div className="mt-3 rounded-xl bg-slate-50 border border-slate-100 p-3 text-sm">
+          <div className="text-xs font-medium text-slate-500 mb-2 flex items-center gap-1.5"><Banknote size={14} /> Cuenta de deposito</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+            <DatoBanco label="Banco" valor={p.banco} />
+            <DatoBanco label="Beneficiario" valor={p.beneficiario} />
+            <DatoBanco label="Cuenta" valor={p.cuenta} copiable />
+            <DatoBanco label="CLABE" valor={p.clabe} copiable mono />
+          </div>
+        </div>
+      </div>
+
+      {/* Codesarrolladores de este proyecto */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <h3 className="font-semibold text-slate-800 flex items-center gap-2 mb-3"><Users size={18} /> Codesarrolladores <span className="text-sm font-normal text-slate-400">({inversiones.length})</span></h3>
+        {inversiones.length === 0 ? (
+          <p className="text-sm text-slate-400">Aun no hay codesarrolladores en este proyecto.</p>
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {inversiones.map((iv) => {
+              const inv = inversionistaPorId(iv.inversionistaId);
+              return (
+                <li key={iv.folio} className="py-2 flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-slate-700 truncate">{inv?.nombre || "—"}</div>
+                    <div className="text-xs text-slate-400 font-mono">{iv.folio} · {money(num(iv.montoTotal))}</div>
+                  </div>
+                  <IconBtn onClick={() => onAbrirInversion(iv.folio)} icon={ChevronRight} title="Abrir inversion" />
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Avance del proyecto (galeria por etapa) */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><HardHat size={18} /> Avance del proyecto <span className="text-xs font-normal text-slate-400">(lo ven los codesarrolladores)</span></h3>
+          <Btn variant="outline" onClick={() => onNuevoAvance(proyectoId)}><Plus size={15} /> Avance</Btn>
+        </div>
+        {avances.length === 0 ? (
+          <p className="text-sm text-slate-400">Sin avances. Sube fotos, videos o documentos del progreso (por etapa).</p>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            {avances.map((av) => (
+              <div key={av.id} className="rounded-xl border border-slate-200 overflow-hidden">
+                <div className="relative aspect-[4/3] bg-slate-100">
+                  {av.tipo === "video" ? (
+                    <div className="w-full h-full flex items-center justify-center" style={{ background: "#1a1409" }}><PlayCircle size={30} style={{ color: "#d4be8a" }} /></div>
+                  ) : av.tipo === "documento" ? (
+                    <div className="w-full h-full flex items-center justify-center" style={{ background: "#f5f1ea" }}><FileText size={30} style={{ color: "#c9a96e" }} /></div>
+                  ) : (
+                    <img src={driveImg(av.url)} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover" />
+                  )}
+                  {av.etapa ? <span className="absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white">{av.etapa}</span> : null}
+                </div>
+                <div className="p-2">
+                  <div className="text-xs font-medium text-slate-700 truncate">{av.titulo || "(sin titulo)"}</div>
+                  <div className="text-[10px] text-slate-400">{fmtFecha(av.fecha)}</div>
+                  <div className="flex justify-end gap-1 mt-1">
+                    {av.url ? <a href={av.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a] p-1"><ExternalLink size={13} /></a> : null}
+                    <IconBtn onClick={() => onEditarAvance(av)} icon={Pencil} title="Editar" />
+                    <IconBtn onClick={() => onEliminarAvance(av)} icon={Trash2} title="Eliminar" danger />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Bitacora del asesor */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><MessageCircle size={18} /> Bitacora del asesor</h3>
+          <Btn variant="outline" onClick={() => onNuevaNota(proyectoId)}><Plus size={15} /> Nota</Btn>
+        </div>
+        {bitacora.length === 0 ? (
+          <p className="text-sm text-slate-400">Sin notas. Agrega actualizaciones o respuestas para los codesarrolladores.</p>
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {bitacora.map((b) => (
+              <li key={b.id} className="py-2.5 flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs text-slate-400">{fmtFecha(b.fecha)}</span>
+                    {b.etiqueta ? <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#7a5e1e" }}>{b.etiqueta}</span> : null}
+                    {b.autor ? <span className="text-[11px] text-slate-400">· {b.autor}</span> : null}
+                  </div>
+                  {b.titulo ? <div className="text-sm font-medium text-slate-700 mt-0.5">{b.titulo}</div> : null}
+                  <div className="text-sm text-slate-600">{b.nota}</div>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <IconBtn onClick={() => onEditarNota(b)} icon={Pencil} title="Editar" />
+                  <IconBtn onClick={() => onEliminarNota(b)} icon={Trash2} title="Eliminar" danger />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DetalleInversion({
   folio, data, inversionistaPorId, proyectoPorId, aportacionesDeFolio, documentosDeFolio, capitalRecibido,
   onVolver, onEditarInversion, onNuevaAportacion, onEditarAportacion, onEliminarAportacion,
   onMarcarRecibida, onGuardarComprobante, onGenerarPlan, onNuevoDocumento, onEliminarDocumento,
-  onNuevoAvance, onEditarAvance, onEliminarAvance, onNuevaNota, onEditarNota, onEliminarNota,
+  onAbrirProyecto,
 }) {
   const inv = arr(data.Inversiones).find(i => String(i.folio) === String(folio));
   const [compEdit, setCompEdit] = useState({}); // id -> url temporal
@@ -1903,8 +2076,6 @@ function DetalleInversion({
   const proyecto = proyectoPorId(inv.proyectoId);
   const aportaciones = aportacionesDeFolio(folio);
   const documentos = documentosDeFolio(folio);
-  const avances = arr(data.Avances).filter(a => String(a.folio) === String(folio)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
-  const bitacora = arr(data.Bitacora).filter(b => String(b.folio) === String(folio)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
   const recibido = capitalRecibido(folio);
   const monto = num(inv.montoTotal);
 
@@ -2058,69 +2229,10 @@ function DetalleInversion({
         )}
       </div>
 
-      {/* Avance de obra (fotos/videos que ve el Codesarrollador) */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><HardHat size={18} /> Avance de obra <span className="text-xs font-normal text-slate-400">(lo ve el Codesarrollador)</span></h3>
-          <Btn variant="outline" onClick={() => onNuevoAvance(folio)}><Plus size={15} /> Avance</Btn>
-        </div>
-        {avances.length === 0 ? (
-          <p className="text-sm text-slate-400">Sin avances. Sube fotos o videos del progreso (enlaces de Drive/YouTube).</p>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-            {avances.map((av) => (
-              <div key={av.id} className="rounded-xl border border-slate-200 overflow-hidden">
-                <div className="relative aspect-[4/3] bg-slate-100">
-                  {av.tipo === "video" ? (
-                    <div className="w-full h-full flex items-center justify-center" style={{ background: "#1a1409" }}><PlayCircle size={30} style={{ color: "#d4be8a" }} /></div>
-                  ) : (
-                    <img src={driveImg(av.url)} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover" />
-                  )}
-                </div>
-                <div className="p-2">
-                  <div className="text-xs font-medium text-slate-700 truncate">{av.titulo || "(sin titulo)"}</div>
-                  <div className="text-[10px] text-slate-400">{fmtFecha(av.fecha)}</div>
-                  <div className="flex justify-end gap-1 mt-1">
-                    {av.url ? <a href={av.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a] p-1"><ExternalLink size={13} /></a> : null}
-                    <IconBtn onClick={() => onEditarAvance(av)} icon={Pencil} title="Editar" />
-                    <IconBtn onClick={() => onEliminarAvance(av)} icon={Trash2} title="Eliminar" danger />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Bitacora del asesor */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><MessageCircle size={18} /> Bitacora del asesor <span className="text-xs font-normal text-slate-400">(lo ve el Codesarrollador)</span></h3>
-          <Btn variant="outline" onClick={() => onNuevaNota(folio)}><Plus size={15} /> Nota</Btn>
-        </div>
-        {bitacora.length === 0 ? (
-          <p className="text-sm text-slate-400">Sin notas. Agrega actualizaciones o respuestas para el Codesarrollador.</p>
-        ) : (
-          <ul className="divide-y divide-slate-100">
-            {bitacora.map((b) => (
-              <li key={b.id} className="py-2.5 flex items-start gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-slate-400">{fmtFecha(b.fecha)}</span>
-                    {b.etiqueta ? <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#7a5e1e" }}>{b.etiqueta}</span> : null}
-                    {b.autor ? <span className="text-[11px] text-slate-400">· {b.autor}</span> : null}
-                  </div>
-                  {b.titulo ? <div className="text-sm font-medium text-slate-700 mt-0.5">{b.titulo}</div> : null}
-                  <div className="text-sm text-slate-600">{b.nota}</div>
-                </div>
-                <div className="flex gap-1 shrink-0">
-                  <IconBtn onClick={() => onEditarNota(b)} icon={Pencil} title="Editar" />
-                  <IconBtn onClick={() => onEliminarNota(b)} icon={Trash2} title="Eliminar" danger />
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+      {/* Avance y bitacora ahora viven en el PROYECTO (los comparten todos sus codesarrolladores) */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-sm text-slate-500 flex items-center gap-2"><HardHat size={16} style={{ color: "#c9a96e" }} /> El <b>avance de obra</b> y la <b>bitácora</b> se gestionan en el <b>proyecto</b> (los ven todos sus codesarrolladores).</div>
+        {inv.proyectoId ? <Btn variant="outline" onClick={() => onAbrirProyecto(inv.proyectoId)}>Abrir proyecto <ChevronRight size={15} /></Btn> : null}
       </div>
     </div>
   );
@@ -2160,6 +2272,7 @@ function InvestorApp({ clave, onLogout }) {
   const [reportando, setReportando] = useState(null);
   const [refDraft, setRefDraft] = useState("");
   const [compDraft, setCompDraft] = useState("");
+  const [lightbox, setLightbox] = useState(null);
 
   const cargar = useCallback(async () => {
     setCargando(true); setError("");
@@ -2241,8 +2354,8 @@ function InvestorApp({ clave, onLogout }) {
               const progresoPct = monto > 0 ? Math.min(100, Math.round((recibido / monto) * 100)) : 0;
               const docs = documentos.filter(d => String(d.folio) === String(iv.folio));
               const liquidada = (iv.estado || "Activa") === "Liquidada";
-              const avances = arr(data?.avances).filter(a => String(a.folio) === String(iv.folio)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
-              const bitacora = arr(data?.bitacora).filter(b => String(b.folio) === String(iv.folio)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+              const avances = arr(data?.avances).filter(a => String(a.proyectoId) === String(iv.proyectoId)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+              const bitacora = arr(data?.bitacora).filter(b => String(b.proyectoId) === String(iv.proyectoId)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
               return (
                 <div key={iv.folio} className="space-y-4">
                   {/* HERO: cuanto vale hoy tu inversion */}
@@ -2322,26 +2435,37 @@ function InvestorApp({ clave, onLogout }) {
                   {/* AVANCE DE OBRA (galeria de fotos/videos) */}
                   {avances.length > 0 && (
                     <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-                      <div className="flex items-center gap-2 mb-3">
+                      <div className="flex items-center gap-2 mb-3 flex-wrap">
                         <HardHat size={17} style={{ color: "#c9a96e" }} />
                         <h3 className="font-semibold text-slate-800">Avance de tu proyecto</h3>
+                        {proyecto?.etapaActual ? <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#7a5e1e" }}>Etapa: {proyecto.etapaActual}</span> : null}
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                        {avances.map((av) => (
-                          <a key={av.id} href={av.url || "#"} target="_blank" rel="noreferrer" className="group relative block rounded-xl overflow-hidden aspect-[4/3] bg-slate-100">
-                            {av.tipo === "video" ? (
-                              <div className="w-full h-full flex items-center justify-center" style={{ background: "#1a1409" }}>
-                                <PlayCircle size={36} style={{ color: "#d4be8a" }} />
+                        {avances.map((av) => {
+                          const esFoto = av.tipo !== "video" && av.tipo !== "documento";
+                          const Cont = esFoto ? "button" : "a";
+                          const contProps = esFoto ? { type: "button", onClick: () => setLightbox(av) } : { href: av.url || "#", target: "_blank", rel: "noreferrer" };
+                          return (
+                            <Cont key={av.id} {...contProps} className="group relative block w-full text-left rounded-xl overflow-hidden aspect-[4/3] bg-slate-100">
+                              {av.tipo === "video" ? (
+                                <div className="w-full h-full flex items-center justify-center" style={{ background: "#1a1409" }}>
+                                  <PlayCircle size={36} style={{ color: "#d4be8a" }} />
+                                </div>
+                              ) : av.tipo === "documento" ? (
+                                <div className="w-full h-full flex flex-col items-center justify-center gap-1" style={{ background: "#f5f1ea" }}>
+                                  <FileText size={30} style={{ color: "#c9a96e" }} /><span className="text-[10px] text-slate-500">Documento</span>
+                                </div>
+                              ) : (
+                                <img src={driveImg(av.url)} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover group-hover:scale-105 transition" />
+                              )}
+                              {av.etapa ? <span className="absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white">{av.etapa}</span> : null}
+                              <div className="absolute inset-x-0 bottom-0 p-2" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.72), transparent)" }}>
+                                <div className="text-[11px] text-white font-medium leading-tight truncate">{av.titulo}</div>
+                                <div className="text-[10px] text-white/70">{fmtFecha(av.fecha)}</div>
                               </div>
-                            ) : (
-                              <img src={driveImg(av.url)} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover group-hover:scale-105 transition" />
-                            )}
-                            <div className="absolute inset-x-0 bottom-0 p-2" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.72), transparent)" }}>
-                              <div className="text-[11px] text-white font-medium leading-tight truncate">{av.titulo}</div>
-                              <div className="text-[10px] text-white/70">{fmtFecha(av.fecha)}</div>
-                            </div>
-                          </a>
-                        ))}
+                            </Cont>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -2412,6 +2536,19 @@ function InvestorApp({ clave, onLogout }) {
           </>
         )}
       </main>
+
+      {lightbox && (
+        <div onClick={() => setLightbox(null)} className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <button onClick={() => setLightbox(null)} className="absolute top-4 right-4 text-white/80 hover:text-white"><X size={28} /></button>
+          <div className="max-w-3xl w-full" onClick={(e) => e.stopPropagation()}>
+            <img src={driveImg(lightbox.url)} alt={lightbox.titulo || ""} className="w-full max-h-[80vh] object-contain rounded-xl" />
+            <div className="text-center text-white/90 mt-3">
+              <div className="font-medium">{lightbox.titulo}</div>
+              <div className="text-xs text-white/60">{lightbox.etapa ? lightbox.etapa + " · " : ""}{fmtFecha(lightbox.fecha)}</div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
