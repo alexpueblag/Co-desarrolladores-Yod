@@ -5,7 +5,7 @@ import {
   Copy, Check, AlertTriangle, CheckCircle2, Clock, ChevronRight, ChevronDown,
   TrendingUp, ShieldCheck, KeyRound, Link2, ArrowLeft, Banknote, CircleDollarSign,
   AlertCircle, Loader2, Sparkles, ExternalLink, BadgeCheck, CalendarClock,
-  Image as ImageIcon, PlayCircle, MessageCircle, HardHat, Upload
+  Image as ImageIcon, PlayCircle, MessageCircle, HardHat, Upload, Printer
 } from 'lucide-react';
 import logoWhite from './assets/logo_white.png';
 
@@ -1934,6 +1934,35 @@ function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEdi
   const avances = arr(data.Avances).filter(a => String(a.proyectoId) === String(proyectoId)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
   const bitacora = arr(data.Bitacora).filter(b => String(b.proyectoId) === String(proyectoId)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
 
+  // ----- KPIs del proyecto (solo frontend, reutiliza estadoAportacion) -----
+  const kpisProyecto = useMemo(() => {
+    const foliosProyecto = new Set(inversiones.map(i => String(i.folio)));
+    // Capital comprometido: suma de montoTotal de las inversiones ACTIVAS del proyecto.
+    const inversionesActivas = inversiones.filter(i => (i.estado || "Activa") === "Activa");
+    const capitalComprometido = inversionesActivas.reduce((s, i) => s + num(i.montoTotal), 0);
+    // Aportaciones de este proyecto (por folio).
+    const aportacionesProyecto = arr(data.Aportaciones).filter(a => foliosProyecto.has(String(a.folio)));
+    const recibidas = aportacionesProyecto.filter(a => estadoAportacion(a) === "Recibida");
+    const capitalRecibido = recibidas.reduce((s, a) => s + num(a.monto), 0);
+    const porRecibir = Math.max(0, capitalComprometido - capitalRecibido);
+    const avancePct = capitalComprometido > 0 ? Math.min(100, (capitalRecibido / capitalComprometido) * 100) : 0;
+    const vencidas = aportacionesProyecto.filter(a => estadoAportacion(a) === "Vencida");
+    // Proxima aportacion por cobrar (pendiente o vencida) mas cercana por fecha programada.
+    const proxima = aportacionesProyecto
+      .filter(a => { const e = estadoAportacion(a); return e === "Pendiente" || e === "Vencida"; })
+      .sort((a, b) => (parseDate(a.fechaProgramada)?.getTime() || Infinity) - (parseDate(b.fechaProgramada)?.getTime() || Infinity))[0] || null;
+    // Conteo de avances por etapa (para el sub del KPI de avances).
+    const porEtapa = {};
+    avances.forEach(av => { const k = (av.etapa || "Sin etapa").trim() || "Sin etapa"; porEtapa[k] = (porEtapa[k] || 0) + 1; });
+    const etapasConAvance = Object.keys(porEtapa).length;
+    return {
+      capitalComprometido, capitalRecibido, porRecibir, avancePct,
+      vencidasCount: vencidas.length, proxima,
+      numCodesarrolladores: inversiones.length,
+      numAvances: avances.length, etapasConAvance,
+    };
+  }, [inversiones, avances, data]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -1957,6 +1986,43 @@ function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEdi
             <DatoBanco label="Cuenta" valor={p.cuenta} copiable />
             <DatoBanco label="CLABE" valor={p.clabe} copiable mono />
           </div>
+        </div>
+      </div>
+
+      {/* KPIs del proyecto (salud financiera, sin entrar inversion por inversion) */}
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+          <KpiCard icon={TrendingUp} label="Capital comprometido" value={money(kpisProyecto.capitalComprometido)} sub="inversiones activas" tone="slate" />
+          <KpiCard icon={CheckCircle2} label="Capital recibido" value={money(kpisProyecto.capitalRecibido)} sub={pct(kpisProyecto.avancePct) + " de la captacion"} tone="green" />
+          <KpiCard icon={Clock} label="Por recibir" value={money(kpisProyecto.porRecibir)} tone="gold" />
+          <KpiCard icon={Users} label="Codesarrolladores" value={kpisProyecto.numCodesarrolladores} tone="blue" />
+          <KpiCard icon={HardHat} label="Avances" value={kpisProyecto.numAvances} sub={kpisProyecto.etapasConAvance > 0 ? `${kpisProyecto.etapasConAvance} etapa(s)` : (p.etapaActual ? `Etapa: ${p.etapaActual}` : "sin avances")} tone="slate" />
+          <KpiCard icon={AlertTriangle} label="Aportaciones vencidas" value={kpisProyecto.vencidasCount} tone="red" alert={kpisProyecto.vencidasCount > 0} />
+        </div>
+
+        {/* Barra de avance de captacion */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-medium text-slate-500">Avance de captacion</span>
+            <span className="text-xs font-semibold tabular-nums" style={{ color: "#7a5e1e" }}>{pct(kpisProyecto.avancePct)}</span>
+          </div>
+          <div className="h-2.5 w-full rounded-full bg-slate-100 overflow-hidden">
+            <div className="h-full rounded-full" style={{ width: `${kpisProyecto.avancePct}%`, background: "linear-gradient(90deg,#c9a96e,#d4be8a)" }} />
+          </div>
+          <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
+            <span>{money(kpisProyecto.capitalRecibido)} recibido</span>
+            <span>{money(kpisProyecto.capitalComprometido)} comprometido</span>
+          </div>
+          {kpisProyecto.proxima ? (
+            <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2 flex-wrap text-xs">
+              <CalendarClock size={14} className="text-slate-400" />
+              <span className="text-slate-500">Proxima aportacion:</span>
+              <span className="font-medium text-slate-700">{kpisProyecto.proxima.concepto || `Pago ${kpisProyecto.proxima.numeroPago}`}</span>
+              <span className="text-slate-400">· {fmtFecha(kpisProyecto.proxima.fechaProgramada)}</span>
+              <span className="font-semibold text-slate-700 tabular-nums">· {money(kpisProyecto.proxima.monto)}</span>
+              {estadoAportacion(kpisProyecto.proxima) === "Vencida" ? <Badge tone="red">Vencida</Badge> : null}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -2093,6 +2159,7 @@ function DetalleInversion({
         </div>
         <div className="ml-auto flex items-center gap-2">
           <EstadoInversionBadge estado={inv.estado || "Activa"} />
+          <Btn variant="outline" onClick={() => window.print()}><Printer size={15} /> Estado de cuenta</Btn>
           <Btn variant="outline" onClick={() => onEditarInversion(inv)}><Pencil size={15} /> Editar</Btn>
         </div>
       </div>
@@ -2234,6 +2301,9 @@ function DetalleInversion({
         <div className="text-sm text-slate-500 flex items-center gap-2"><HardHat size={16} style={{ color: "#c9a96e" }} /> El <b>avance de obra</b> y la <b>bitácora</b> se gestionan en el <b>proyecto</b> (los ven todos sus codesarrolladores).</div>
         {inv.proyectoId ? <Btn variant="outline" onClick={() => onAbrirProyecto(inv.proyectoId)}>Abrir proyecto <ChevronRight size={15} /></Btn> : null}
       </div>
+
+      {/* Estado de cuenta imprimible (solo visible al imprimir) */}
+      <EstadoCuenta inv={inv} inversionista={inversionista} proyecto={proyecto} aportaciones={aportaciones} />
     </div>
   );
 }
@@ -2247,6 +2317,154 @@ function IconBtn({ onClick, icon: Icon, title, danger }) {
     >
       <Icon size={16} />
     </button>
+  );
+}
+
+// ===================================================================
+// ESTADO DE CUENTA IMPRIMIBLE (a PDF via "Imprimir > Guardar como PDF")
+// ===================================================================
+// Documento limpio que solo se ve al imprimir (clase "hidden print:block").
+// Reutiliza los helpers money/fmtFecha/num/pct/calcularRendimiento/estadoAportacion.
+// Lleva el id #estado-cuenta-print para que el CSS @media print de index.css
+// oculte el resto de la pantalla y muestre solo este bloque.
+// IMPORTANTE: solo puede haber UN #estado-cuenta-print visible al imprimir.
+// En la vista del inversionista (que puede tener varias inversiones) se controla
+// con la prop "activo": solo el seleccionado lleva el id y la clase print:block.
+function EstadoCuenta({ inv, inversionista, proyecto, aportaciones, activo = true }) {
+  if (!inv) return null;
+  const aps = arr(aportaciones).slice().sort((a, b) => num(a.numeroPago) - num(b.numeroPago));
+  const monto = num(inv.montoTotal);
+  const recibido = aps.filter(a => estadoAportacion(a) === "Recibida").reduce((s, a) => s + num(a.monto), 0);
+  const programado = aps.reduce((s, a) => s + num(a.monto), 0);
+  const comprometido = monto || programado;
+  const porRecibir = Math.max(0, comprometido - recibido);
+
+  const fechaFin = inv.fechaSalida && String(inv.fechaSalida).trim() ? inv.fechaSalida : todayISO();
+  const liquidada = !!(inv.fechaSalida && String(inv.fechaSalida).trim());
+  const rend = calcularRendimiento(monto, inv.fechaInicio, fechaFin, inv.tasaAnual);
+
+  const labelEstado = (e) => {
+    const t = e === "Recibida" ? "#0f7a3d" : e === "Vencida" ? "#b42318" : e === "En aprobacion" ? "#1d4ed8" : "#8a6d1e";
+    return <span style={{ color: t, fontWeight: 600 }}>{e}</span>;
+  };
+
+  return (
+    <div
+      id={activo ? "estado-cuenta-print" : undefined}
+      className={activo ? "hidden print:block" : "hidden"}
+      style={{ background: "#fff", color: "#1a1409", fontSize: "12px" }}
+    >
+      {/* Encabezado de marca */}
+      <div style={{ background: "#1a1409", padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <img src={logoWhite} alt="YODESARROLLO" style={{ height: "26px", mixBlendMode: "screen" }} />
+        <div style={{ textAlign: "right", color: "#d4be8a" }}>
+          <div style={{ fontSize: "13px", letterSpacing: "0.18em", textTransform: "uppercase" }}>Estado de cuenta</div>
+          <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.6)", marginTop: "2px" }}>Folio {inv.folio} · Emitido {fmtFecha(todayISO())}</div>
+        </div>
+      </div>
+
+      <div style={{ padding: "20px 24px" }}>
+        {/* Datos del codesarrollador y del proyecto */}
+        <div style={{ display: "flex", gap: "24px", flexWrap: "wrap", marginBottom: "16px" }}>
+          <div style={{ flex: "1 1 220px" }}>
+            <div style={{ fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "4px" }}>Codesarrollador</div>
+            <div style={{ fontWeight: 600, fontSize: "14px" }}>{inversionista?.nombre || "—"}</div>
+            {inversionista?.email ? <div style={{ color: "#555" }}>{inversionista.email}</div> : null}
+            {inversionista?.telefono ? <div style={{ color: "#555" }}>{inversionista.telefono}</div> : null}
+          </div>
+          <div style={{ flex: "1 1 220px" }}>
+            <div style={{ fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "4px" }}>Proyecto</div>
+            <div style={{ fontWeight: 600, fontSize: "14px" }}>{proyecto?.nombre || "—"}</div>
+            {proyecto?.tipo ? <div style={{ color: "#555" }}>{proyecto.tipo}{proyecto?.etapaActual ? ` · Etapa: ${proyecto.etapaActual}` : ""}</div> : null}
+            <div style={{ color: "#555" }}>Inicio: {fmtFecha(inv.fechaInicio)}{liquidada ? ` · Salida: ${fmtFecha(inv.fechaSalida)}` : ""}</div>
+          </div>
+        </div>
+
+        {/* Totales */}
+        <div style={{ display: "flex", gap: "10px", marginBottom: "18px", flexWrap: "wrap" }}>
+          {[
+            { l: "Comprometido", v: money(comprometido) },
+            { l: "Recibido", v: money(recibido), c: "#0f7a3d" },
+            { l: "Por recibir", v: money(porRecibir), c: porRecibir > 0 ? "#b42318" : "#1a1409" },
+          ].map((t) => (
+            <div key={t.l} style={{ flex: "1 1 120px", border: "1px solid #e6d6b0", borderRadius: "10px", padding: "10px 12px", background: "#faf7f0" }}>
+              <div style={{ fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e" }}>{t.l}</div>
+              <div style={{ fontSize: "16px", fontWeight: 700, marginTop: "2px", color: t.c || "#1a1409" }}>{t.v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Calendario de aportaciones */}
+        <div style={{ fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "6px" }}>Calendario de aportaciones</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", marginBottom: "18px" }}>
+          <thead>
+            <tr style={{ borderBottom: "2px solid #1a1409", textAlign: "left" }}>
+              <th style={{ padding: "6px 6px" }}>#</th>
+              <th style={{ padding: "6px 6px" }}>Concepto</th>
+              <th style={{ padding: "6px 6px" }}>Programada</th>
+              <th style={{ padding: "6px 6px" }}>Recibida</th>
+              <th style={{ padding: "6px 6px", textAlign: "right" }}>Monto</th>
+              <th style={{ padding: "6px 6px" }}>Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {aps.length === 0 ? (
+              <tr><td colSpan={6} style={{ padding: "10px 6px", color: "#888" }}>Sin aportaciones registradas.</td></tr>
+            ) : aps.map((a) => (
+              <tr key={a.id} style={{ borderBottom: "1px solid #eee" }}>
+                <td style={{ padding: "6px 6px" }}>{a.numeroPago}{a.totalPagos ? `/${a.totalPagos}` : ""}</td>
+                <td style={{ padding: "6px 6px" }}>{a.concepto || `Aportacion ${a.numeroPago}`}{a.referencia ? <div style={{ color: "#888", fontSize: "10px" }}>Ref: {a.referencia}</div> : null}</td>
+                <td style={{ padding: "6px 6px" }}>{fmtFecha(a.fechaProgramada)}</td>
+                <td style={{ padding: "6px 6px" }}>{a.fechaRecibida ? fmtFecha(a.fechaRecibida) : "—"}</td>
+                <td style={{ padding: "6px 6px", textAlign: "right", fontWeight: 600 }}>{money(a.monto)}</td>
+                <td style={{ padding: "6px 6px" }}>{labelEstado(estadoAportacion(a))}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr style={{ borderTop: "2px solid #1a1409", fontWeight: 700 }}>
+              <td colSpan={4} style={{ padding: "6px 6px", textAlign: "right" }}>Total recibido</td>
+              <td style={{ padding: "6px 6px", textAlign: "right", color: "#0f7a3d" }}>{money(recibido)}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+
+        {/* Rendimiento estimado */}
+        <div style={{ fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "6px" }}>Rendimiento estimado</div>
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "16px" }}>
+          {[
+            { l: `Periodo (${rend.dias} dias)`, v: pct(rend.rendimientoPct) },
+            { l: `Tasa anual`, v: pct(rend.tasa) },
+            { l: liquidada ? "Total recibido (salida)" : "Total a recibir (estimado a hoy)", v: money(rend.totalARecibir) },
+            { l: "Ganancia estimada", v: money(rend.ganancia), c: "#8a6d1e" },
+          ].map((t) => (
+            <div key={t.l} style={{ flex: "1 1 120px", border: "1px solid #ddd", borderRadius: "10px", padding: "10px 12px" }}>
+              <div style={{ fontSize: "10px", color: "#888" }}>{t.l}</div>
+              <div style={{ fontSize: "15px", fontWeight: 700, marginTop: "2px", color: t.c || "#1a1409" }}>{t.v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Cuenta de deposito */}
+        {proyecto && (proyecto.banco || proyecto.clabe) ? (
+          <div style={{ border: "1px solid #e6d6b0", borderRadius: "10px", padding: "10px 12px", marginBottom: "16px", background: "#faf7f0" }}>
+            <div style={{ fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "4px" }}>Cuenta de deposito</div>
+            <div style={{ display: "flex", gap: "20px", flexWrap: "wrap", fontSize: "11px" }}>
+              {proyecto.banco ? <div><b>Banco:</b> {proyecto.banco}</div> : null}
+              {proyecto.beneficiario ? <div><b>Beneficiario:</b> {proyecto.beneficiario}</div> : null}
+              {proyecto.cuenta ? <div><b>Cuenta:</b> {proyecto.cuenta}</div> : null}
+              {proyecto.clabe ? <div><b>CLABE:</b> {proyecto.clabe}</div> : null}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Pie */}
+        <div style={{ borderTop: "1px solid #ddd", paddingTop: "10px", fontSize: "10px", color: "#999", textAlign: "center" }}>
+          Documento informativo. No es un comprobante fiscal. Los rendimientos son estimados y se prorratean por dia conforme a la tasa preferente vigente. · YODESARROLLO · Emitido el {fmtFecha(todayISO())}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2273,6 +2491,17 @@ function InvestorApp({ clave, onLogout }) {
   const [refDraft, setRefDraft] = useState("");
   const [compDraft, setCompDraft] = useState("");
   const [lightbox, setLightbox] = useState(null);
+  // Folio de la inversion seleccionada para imprimir su estado de cuenta.
+  // Solo ese documento lleva el id #estado-cuenta-print (los demas quedan ocultos),
+  // asi un codesarrollador con 2+ inversiones imprime la que eligio.
+  const [printFolio, setPrintFolio] = useState(null);
+
+  // Marca la inversion a imprimir y dispara la impresion en el siguiente frame
+  // (para que React ya haya aplicado el id #estado-cuenta-print antes de window.print()).
+  const imprimirEstado = useCallback((folio) => {
+    setPrintFolio(folio);
+    requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
+  }, []);
 
   const cargar = useCallback(async () => {
     setCargando(true); setError("");
@@ -2312,6 +2541,33 @@ function InvestorApp({ clave, onLogout }) {
   const proyectoPorId = (id) => proyectos.find(p => String(p.id) === String(id));
   const aportacionesDeFolio = (folio) => aportaciones.filter(a => String(a.folio) === String(folio)).sort((a, b) => num(a.numeroPago) - num(b.numeroPago));
 
+  // Resumen consolidado del portafolio (solo aplica con 2+ inversiones).
+  // Reutiliza el MISMO calculo por-inversion del hero individual (fechaFin =
+  // fechaSalida || hoy, calcularRendimiento) para que los totales cuadren.
+  const portafolio = useMemo(() => {
+    if (inversiones.length < 2) return null;
+    let totalInvertido = 0, valorHoy = 0;
+    const proyectosSet = new Set();
+    inversiones.forEach((iv) => {
+      const monto = num(iv.montoTotal);
+      const fechaFin = iv.fechaSalida && String(iv.fechaSalida).trim() ? iv.fechaSalida : todayISO();
+      const rend = calcularRendimiento(monto, iv.fechaInicio, fechaFin, iv.tasaAnual);
+      totalInvertido += monto;
+      valorHoy += rend.totalARecibir;
+      if (iv.proyectoId != null && String(iv.proyectoId).trim()) proyectosSet.add(String(iv.proyectoId));
+    });
+    const gananciaTotal = Math.max(0, valorHoy - totalInvertido);
+    const rendimientoPonderado = totalInvertido > 0 ? (gananciaTotal / totalInvertido) * 100 : 0;
+    return {
+      totalInvertido,
+      valorHoy,
+      gananciaTotal,
+      rendimientoPonderado,
+      numInversiones: inversiones.length,
+      numProyectos: proyectosSet.size,
+    };
+  }, [inversiones]);
+
   return (
     <div className="min-h-screen" style={{ background: "#f5f1ea" }}>
       <header style={{ background: "#0a0a0c" }}>
@@ -2339,6 +2595,37 @@ function InvestorApp({ clave, onLogout }) {
               <div className="text-2xl font-display text-slate-900">Hola, {(inv?.nombre || "").split(" ")[0] || "Codesarrollador"}</div>
               <div className="text-sm text-slate-500">Este es el resumen de tu inversion con YoDesarrollo.</div>
             </div>
+
+            {/* RESUMEN CONSOLIDADO DEL PORTAFOLIO (solo con 2+ inversiones) */}
+            {portafolio && (
+              <div className="rounded-3xl p-6 shadow-lg" style={{ background: "linear-gradient(160deg,#221a0f 0%,#1a1409 55%,#0a0a0c 100%)" }}>
+                <div className="text-[11px] tracking-[0.22em] uppercase mb-3 text-center" style={{ color: "#c9a96e" }}>Tu portafolio</div>
+                <div className="text-center">
+                  <div className="text-sm text-white/50">Valor estimado hoy</div>
+                  <div className="font-display leading-none mt-1" style={{ color: "#e0c590", fontSize: "2.9rem" }}>{money(portafolio.valorHoy)}</div>
+                  <div className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold px-3 py-1 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#d4be8a" }}>
+                    <TrendingUp size={15} /> +{pct(portafolio.rendimientoPonderado)} estimado
+                  </div>
+                  <div className="text-xs text-white/40 mt-3">{portafolio.numProyectos} {portafolio.numProyectos === 1 ? "proyecto" : "proyectos"} · invertiste {money(portafolio.totalInvertido)} · ganancia estimada {money(portafolio.gananciaTotal)}</div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2.5 mt-5">
+                  <div className="rounded-2xl p-3 text-center" style={{ background: "rgba(255,255,255,0.06)" }}>
+                    <div className="text-[10px] uppercase tracking-wide" style={{ color: "rgba(255,255,255,0.45)" }}>Invertido</div>
+                    <div className="text-sm font-semibold text-white mt-0.5">{money(portafolio.totalInvertido)}</div>
+                  </div>
+                  <div className="rounded-2xl p-3 text-center" style={{ background: "rgba(255,255,255,0.06)" }}>
+                    <div className="text-[10px] uppercase tracking-wide" style={{ color: "rgba(255,255,255,0.45)" }}>Ganancia</div>
+                    <div className="text-sm font-semibold mt-0.5" style={{ color: "#d4be8a" }}>{money(portafolio.gananciaTotal)}</div>
+                  </div>
+                  <div className="rounded-2xl p-3 text-center" style={{ background: "rgba(255,255,255,0.06)" }}>
+                    <div className="text-[10px] uppercase tracking-wide" style={{ color: "rgba(255,255,255,0.45)" }}>Inversiones</div>
+                    <div className="text-sm font-semibold text-white mt-0.5">{portafolio.numInversiones}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {inversiones.length === 0 ? (
               <EmptyState icon={Wallet} texto="Aun no tienes inversiones registradas. Contacta al equipo de YoDesarrollo." />
             ) : inversiones.map((iv) => {
@@ -2348,7 +2635,7 @@ function InvestorApp({ clave, onLogout }) {
               const monto = num(iv.montoTotal);
               const fechaFin = iv.fechaSalida && String(iv.fechaSalida).trim() ? iv.fechaSalida : todayISO();
               const rend = calcularRendimiento(monto, iv.fechaInicio, fechaFin, iv.tasaAnual);
-              const ganancia = Math.max(0, rend.totalARecibir - monto);
+              const ganancia = rend.ganancia;
               const pagosRecibidos = aps.filter(a => estadoAportacion(a) === "Recibida").length;
               const proximo = aps.find(a => estadoAportacion(a) !== "Recibida");
               const progresoPct = monto > 0 ? Math.min(100, Math.round((recibido / monto) * 100)) : 0;
@@ -2529,7 +2816,23 @@ function InvestorApp({ clave, onLogout }) {
                         </ul>
                       </div>
                     )}
+                    <div className="mt-4 pt-4 border-t border-slate-100">
+                      <Btn variant="outline" onClick={() => imprimirEstado(iv.folio)} className="w-full sm:w-auto">
+                        <Printer size={15} /> Descargar estado de cuenta (PDF)
+                      </Btn>
+                      <p className="text-[11px] text-slate-400 mt-1.5">Se abre el dialogo de impresion; elige "Guardar como PDF".</p>
+                    </div>
                   </details>
+
+                  {/* Estado de cuenta imprimible de esta inversion (solo visible al imprimir,
+                      y solo el folio seleccionado lleva el id #estado-cuenta-print). */}
+                  <EstadoCuenta
+                    inv={iv}
+                    inversionista={inv}
+                    proyecto={proyecto}
+                    aportaciones={aps}
+                    activo={printFolio === iv.folio}
+                  />
                 </div>
               );
             })}

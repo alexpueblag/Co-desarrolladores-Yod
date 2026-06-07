@@ -25,3 +25,29 @@ body {
   font-family: "Instrument Serif", ui-serif, Georgia, serif;
   letter-spacing: 0.01em;
 }
+
+/* ===================================================================
+   IMPRESION DEL ESTADO DE CUENTA (window.print -> Guardar como PDF)
+   - Oculta TODA la pantalla y muestra solo el doc marcado para imprimir.
+   - El doc imprimible vive normalmente con la clase Tailwind "hidden print:block",
+     asi que en pantalla no se ve; solo aparece al imprimir.
+   =================================================================== */
+@media print {
+  body * { visibility: hidden; }
+  #estado-cuenta-print,
+  #estado-cuenta-print * { visibility: visible; }
+  #estado-cuenta-print {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+  }
+  /* Fuerza que se respeten los fondos/colores de marca al imprimir */
+  #estado-cuenta-print {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .no-print { display: none !important; }
+}
+
+@page { margin: 14mm; }
