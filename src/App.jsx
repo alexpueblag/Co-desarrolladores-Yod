@@ -119,6 +119,25 @@ function estadoAportacion(ap) {
 function arr(x) { return Array.isArray(x) ? x : []; }
 function num(x) { const v = Number(x); return isFinite(v) ? v : 0; }
 
+// Genera una clave de acceso legible (mismo formato que el backend).
+function generarClaveAcceso() {
+  const abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let s = "";
+  for (let i = 0; i < 15; i++) s += abc.charAt(Math.floor(Math.random() * abc.length));
+  return s.slice(0, 5) + "-" + s.slice(5, 10) + "-" + s.slice(10);
+}
+
+// Suma n meses a una fecha "yyyy-MM-dd" (ajustando el dia si el mes es mas corto).
+function sumarMeses(iso, n) {
+  const d = parseDate(iso);
+  if (!d) return iso;
+  const dia = d.getDate();
+  const destino = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const ultimoDia = new Date(destino.getFullYear(), destino.getMonth() + 1, 0).getDate();
+  destino.setDate(Math.min(dia, ultimoDia));
+  return `${destino.getFullYear()}-${String(destino.getMonth() + 1).padStart(2, "0")}-${String(destino.getDate()).padStart(2, "0")}`;
+}
+
 // Quita campos sensibles (claveAcceso, notas) de los inversionistas antes de
 // persistir el cache en localStorage. El cache es solo para arranque/offline de
 // la UI; no necesita las claves de acceso ni notas internas, que en una Mac
@@ -938,6 +957,101 @@ function AportacionForm({ value, onChange }) {
 // ===================================================================
 // VISTA ADMIN
 // ===================================================================
+// ===================================================================
+// ASISTENTE: NUEVO CODESARROLLADOR (crea inversionista + inversion +
+// aportaciones + clave, todo de un jalon)
+// ===================================================================
+function WizardAlta({ proyectos, onCrear, onClose }) {
+  const [d, setD] = useState({ nombre: "", email: "", telefono: "", proyectoId: "", folio: "", montoTotal: "", fechaInicio: todayISO(), numPagos: 4, primerPago: "", tasaAnual: 25 });
+  const [nuevoProy, setNuevoProy] = useState({ nombre: "", banco: "", beneficiario: "YODESARROLLO SAPI DE CV", cuenta: "", clabe: "", conceptoBase: "" });
+  const [usarNuevoProy, setUsarNuevoProy] = useState(arr(proyectos).length === 0);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [resultado, setResultado] = useState(null);
+  const set = (k, v) => setD(p => ({ ...p, [k]: v }));
+  const setNP = (k, v) => setNuevoProy(p => ({ ...p, [k]: v }));
+  const nPagos = Math.max(1, parseInt(d.numPagos, 10) || 1);
+
+  const crear = async () => {
+    setError("");
+    if (!d.nombre.trim() || !d.email.trim()) { setError("Pon al menos el nombre y el correo del Codesarrollador."); return; }
+    if (!d.folio.trim()) { setError("Escribe el folio (ej. CA-HM-2026-01)."); return; }
+    if (usarNuevoProy && !nuevoProy.nombre.trim()) { setError("Ponle nombre al proyecto nuevo."); return; }
+    if (!usarNuevoProy && !d.proyectoId) { setError("Elige un proyecto (o crea uno nuevo)."); return; }
+    if (num(d.montoTotal) <= 0) { setError("Pon el monto total de la inversion."); return; }
+    setCargando(true);
+    try {
+      const r = await onCrear({ ...d, numPagos: nPagos, nuevoProyecto: usarNuevoProy ? nuevoProy : null, proyectoId: usarNuevoProy ? "" : d.proyectoId });
+      setResultado(r);
+    } catch (e) {
+      setError(e?.message || "No se pudo crear. Revisa los datos e intenta de nuevo.");
+    } finally { setCargando(false); }
+  };
+
+  return (
+    <Modal open onClose={onClose} title="Nuevo Codesarrollador" width="max-w-2xl">
+      {resultado ? (
+        <div className="space-y-4">
+          <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4 text-emerald-800 flex items-start gap-2">
+            <BadgeCheck size={20} className="shrink-0 mt-0.5" />
+            <span>¡Listo! Se creo <b>{d.nombre}</b> con su inversion (<b>{d.folio}</b>) y <b>{nPagos} aportaciones</b>.</span>
+          </div>
+          <div className="rounded-xl border border-slate-200 p-4">
+            <div className="text-xs text-slate-500 mb-1">Clave de acceso del Codesarrollador (compartesela):</div>
+            <div className="text-xl font-mono font-bold tracking-wide text-slate-800 select-all">{resultado.clave}</div>
+            <div className="text-xs text-slate-400 mt-2">Tambien podra recuperarla solo, por correo, con "¿Olvidaste tu clave?".</div>
+          </div>
+          <div className="flex justify-end"><Btn onClick={onClose}>Cerrar</Btn></div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid md:grid-cols-3 gap-3">
+            <Field label="Nombre"><Input value={d.nombre} onChange={e => set("nombre", e.target.value)} placeholder="Hugo Meave" /></Field>
+            <Field label="Correo (para su acceso)"><Input type="email" value={d.email} onChange={e => set("email", e.target.value)} placeholder="correo@ejemplo.com" /></Field>
+            <Field label="Telefono (opcional)"><Input value={d.telefono} onChange={e => set("telefono", e.target.value)} /></Field>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-slate-700">Proyecto</div>
+              <label className="text-xs flex items-center gap-1.5 text-slate-500"><input type="checkbox" checked={usarNuevoProy} onChange={e => setUsarNuevoProy(e.target.checked)} /> Crear proyecto nuevo</label>
+            </div>
+            {usarNuevoProy ? (
+              <div className="grid md:grid-cols-2 gap-3">
+                <Field label="Nombre del proyecto"><Input value={nuevoProy.nombre} onChange={e => setNP("nombre", e.target.value)} placeholder="Casa Alysa" /></Field>
+                <Field label="Banco"><Input value={nuevoProy.banco} onChange={e => setNP("banco", e.target.value)} placeholder="BBVA" /></Field>
+                <Field label="Beneficiario"><Input value={nuevoProy.beneficiario} onChange={e => setNP("beneficiario", e.target.value)} /></Field>
+                <Field label="Cuenta"><Input value={nuevoProy.cuenta} onChange={e => setNP("cuenta", e.target.value)} /></Field>
+                <Field label="CLABE"><Input value={nuevoProy.clabe} onChange={e => setNP("clabe", e.target.value)} /></Field>
+                <Field label="Concepto base"><Input value={nuevoProy.conceptoBase} onChange={e => setNP("conceptoBase", e.target.value)} placeholder="Aportacion <proyecto> - <Codesarrollador> - <Folio>" /></Field>
+              </div>
+            ) : (
+              <Field label="Elige proyecto"><Select value={d.proyectoId} onChange={e => set("proyectoId", e.target.value)}><option value="">— Elige —</option>{arr(proyectos).map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}</Select></Field>
+            )}
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-3">
+            <Field label="Folio" hint="Ej. CA-HM-2026-01"><Input value={d.folio} onChange={e => set("folio", e.target.value)} placeholder="CA-HM-2026-01" /></Field>
+            <Field label="Monto total (MXN)"><Input type="number" value={d.montoTotal} onChange={e => set("montoTotal", e.target.value)} placeholder="1000000" /></Field>
+            <Field label="Tasa anual (%)"><Input type="number" value={d.tasaAnual} onChange={e => set("tasaAnual", e.target.value)} /></Field>
+            <Field label="Fecha de inicio"><Input type="date" value={d.fechaInicio} onChange={e => set("fechaInicio", e.target.value)} /></Field>
+            <Field label="Numero de pagos"><Input type="number" value={d.numPagos} onChange={e => set("numPagos", e.target.value)} /></Field>
+            <Field label="Primer pago (opcional)" hint="Si el 1er pago es distinto"><Input type="number" value={d.primerPago} onChange={e => set("primerPago", e.target.value)} placeholder="ej. 350000" /></Field>
+          </div>
+
+          <div className="text-xs text-slate-500">Se generaran <b>{nPagos} aportaciones</b> mensuales desde la fecha de inicio, y una <b>clave de acceso</b> para el Codesarrollador.</div>
+
+          {error && <p className="text-sm text-red-600 flex items-center gap-1"><AlertCircle size={14} /> {error}</p>}
+          <div className="flex justify-end gap-2">
+            <button onClick={onClose} className="text-sm text-slate-500 px-3">Cancelar</button>
+            <Btn onClick={crear} disabled={cargando}>{cargando ? <Spinner /> : <Plus size={15} />} Crear Codesarrollador</Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function AdminApp({ pass, onLogout }) {
   const [data, setData] = useState(() => {
     try {
@@ -955,6 +1069,7 @@ function AdminApp({ pass, onLogout }) {
   const [inversionAbierta, setInversionAbierta] = useState(null); // folio
   const [modal, setModal] = useState(null); // { tab, row } para crear/editar
   const [confirm, setConfirm] = useState(null); // { tab, key, msg }
+  const [wizard, setWizard] = useState(false); // asistente "Nuevo Codesarrollador"
   const toastTimer = useRef(null);
 
   const notificar = useCallback((msg, tipo = "info") => {
@@ -1043,6 +1158,41 @@ function AdminApp({ pass, onLogout }) {
     }
   }, [pass, notificar, manejarError]);
 
+  // ----- asistente: alta completa de un Codesarrollador -----
+  const altaCodesarrollador = useCallback(async (d) => {
+    // 1) Inversionista (con clave generada).
+    const clave = generarClaveAcceso();
+    const invId = await guardarFila("Inversionistas", { nombre: d.nombre.trim(), email: d.email.trim(), telefono: d.telefono || "", claveAcceso: clave, notas: "" });
+    // 2) Proyecto (nuevo o existente).
+    let proyectoId = d.proyectoId;
+    if (!proyectoId && d.nuevoProyecto) {
+      proyectoId = await guardarFila("Proyectos", { ...d.nuevoProyecto, estado: "Abierto" });
+    }
+    // 3) Inversion.
+    await guardarFila("Inversiones", { folio: d.folio.trim(), inversionistaId: invId, proyectoId: proyectoId, montoTotal: num(d.montoTotal), fechaInicio: d.fechaInicio, fechaSalida: "", tasaAnual: num(d.tasaAnual) || 25, estado: "Activa", notas: "" });
+    // 4) Aportaciones (reparto del monto + fechas mensuales).
+    const n = Math.max(1, parseInt(d.numPagos, 10) || 1);
+    const total = num(d.montoTotal);
+    const primero = num(d.primerPago);
+    const montos = [];
+    if (primero > 0 && n > 1) {
+      const cada = Math.round((total - primero) / (n - 1));
+      for (let i = 0; i < n; i++) {
+        if (i === 0) montos.push(primero);
+        else if (i === n - 1) montos.push(total - primero - cada * (n - 2));
+        else montos.push(cada);
+      }
+    } else {
+      const cada = Math.round(total / n);
+      for (let i = 0; i < n; i++) montos.push(i === n - 1 ? total - cada * (n - 1) : cada);
+    }
+    for (let i = 0; i < n; i++) {
+      const concepto = i === 0 ? "Aportacion inicial" : (i === n - 1 ? "Aportacion final" : `Aportacion ${i + 1} de ${n}`);
+      await guardarFila("Aportaciones", { folio: d.folio.trim(), numeroPago: i + 1, totalPagos: n, concepto, fechaProgramada: sumarMeses(d.fechaInicio, i), monto: montos[i], fechaRecibida: "", comprobanteUrl: "", referencia: "", fechaReporte: "" });
+    }
+    return { clave, folio: d.folio.trim() };
+  }, [guardarFila]);
+
   // ----- eliminar (delete) -----
   const eliminarFila = useCallback(async (tab, key) => {
     setGuardando(true);
@@ -1127,6 +1277,13 @@ function AdminApp({ pass, onLogout }) {
             <div className="text-[11px] text-slate-400 leading-tight">Panel de administracion</div>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setWizard(true)}
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-semibold"
+              style={{ background: "#c9a96e", color: "#1a1409" }}
+            >
+              <Plus size={14} /> <span className="hidden sm:inline">Nuevo Codesarrollador</span><span className="sm:hidden">Nuevo</span>
+            </button>
             <button
               onClick={() => cargar()}
               disabled={cargando}
@@ -1341,6 +1498,14 @@ function AdminApp({ pass, onLogout }) {
         onCancel={() => setConfirm(null)}
         onConfirm={() => eliminarFila(confirm.tab, confirm.key)}
       />
+
+      {wizard && (
+        <WizardAlta
+          proyectos={data.Proyectos}
+          onCrear={altaCodesarrollador}
+          onClose={() => { setWizard(false); cargar(true); }}
+        />
+      )}
     </div>
   );
 
