@@ -566,6 +566,9 @@ function doPost(e) {
       case 'subirArchivo':
         return subirArchivo(body);
 
+      case 'verComprobante':
+        return verComprobante(body);
+
       // --- Autoservicio del codesarrollador (validan su claveAcceso) ---
       case 'cambiarClave':
         return cambiarClave(body);
@@ -1174,6 +1177,19 @@ function subirArchivo(body) {
   try {
     const bytes = Utilities.base64Decode(b64);
     const blob = Utilities.newBlob(bytes, mime, nombre);
+
+    // PRIVADO (comprobantes de pago): se guardan en una carpeta SIN compartir.
+    //  No se devuelve URL publica; solo el fileId. Se muestran despues via
+    //  verComprobante(), que valida quien puede verlo. Asi un comprobante de pago
+    //  no queda accesible con solo tener el enlace.
+    if (body.privado === true) {
+      const carpetaPriv = obtenerCarpetaComprobantesPrivados();
+      const archivoPriv = carpetaPriv.createFile(blob);
+      return jsonResponse({ ok: true, fileId: archivoPriv.getId(), privado: true });
+    }
+
+    // PUBLICO (fotos de avance, documentos): "cualquiera con el enlace puede ver",
+    //  porque el front los muestra directo (galeria/<img>).
     const carpeta = obtenerCarpetaArchivos();
     const archivo = carpeta.createFile(blob);
     archivo.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
@@ -1184,9 +1200,103 @@ function subirArchivo(body) {
   }
 }
 
+// --- verComprobante: entrega un comprobante PRIVADO solo a quien tiene permiso
+//  Autoriza en tres vias: admin (pass), el codesarrollador DUENO del folio de la
+//  aportacion (clave), o el asesor que tiene asignado el proyecto de ese folio
+//  (clave). Compatibilidad hacia atras: si el valor guardado es una URL http
+//  vieja (publica), la devuelve como enlace; si es un fileId privado, lee el
+//  archivo de Drive y lo devuelve en base64 (dataUrl) para mostrarlo/descargarlo.
+function verComprobante(body) {
+  const apId = (body.id !== undefined && body.id !== null) ? String(body.id).trim() : '';
+  if (!apId) return jsonResponse({ ok: false, error: 'Falta el identificador de la aportacion.' });
+
+  const esAdministrador = esAdmin(body.pass);
+
+  // Localizar la aportacion.
+  const aportaciones = leerHoja('Aportaciones');
+  let ap = null;
+  for (let k = 0; k < aportaciones.length; k++) {
+    if (String(aportaciones[k].id).trim() === apId) { ap = aportaciones[k]; break; }
+  }
+
+  // Autorizacion. Para un NO-admin, cualquier fallo (la aportacion no existe O no
+  // es suya) responde EXACTAMENTE igual ("No autorizado."), para no revelar que
+  // ids de aportacion existen (evita enumeracion). El admin (de confianza) si
+  // puede saber que una aportacion no existe.
+  if (!esAdministrador) {
+    if (demasiadosIntentos()) {
+      return jsonResponse({ ok: false, error: 'Demasiados intentos, espera un momento e intenta de nuevo.' });
+    }
+    let autorizado = false;
+    if (ap) {
+      const folioAp = String(ap.folio).trim();
+      const inversionesAll = leerHoja('Inversiones');
+
+      // ¿es el codesarrollador dueno del folio de esta aportacion?
+      const invUser = buscarInversionistaPorClave(body.clave);
+      if (invUser) {
+        const miId = String(invUser.id).trim();
+        autorizado = inversionesAll.some(function (i) {
+          return String(i.inversionistaId).trim() === miId && String(i.folio).trim() === folioAp;
+        });
+      }
+
+      // ¿es un asesor con el proyecto de ese folio asignado?
+      if (!autorizado) {
+        const asrUser = buscarAsesorPorClave(body.clave);
+        if (asrUser) {
+          const sus = setDeProyectoIds(asrUser.proyectoIds);
+          autorizado = inversionesAll.some(function (i) {
+            return String(i.folio).trim() === folioAp && sus[String(i.proyectoId).trim()] === true;
+          });
+        }
+      }
+    }
+    if (!autorizado) { registrarIntentoFallido(); return jsonResponse({ ok: false, error: 'No autorizado.' }); }
+  } else if (!ap) {
+    return jsonResponse({ ok: false, error: 'No se encontro la aportacion.' });
+  }
+
+  const valor = (ap.comprobanteUrl !== undefined && ap.comprobanteUrl !== null) ? String(ap.comprobanteUrl).trim() : '';
+  if (!valor) return jsonResponse({ ok: true, vacio: true });
+
+  // Compatibilidad: comprobantes viejos son URLs http publicas -> devolver enlace.
+  if (/^https?:\/\//i.test(valor)) {
+    return jsonResponse({ ok: true, url: valor });
+  }
+
+  // Nuevo: es un fileId privado de Drive -> leer y devolver en base64.
+  try {
+    const archivo = DriveApp.getFileById(valor);
+    const blob = archivo.getBlob();
+    const bytes = blob.getBytes();
+    // Tope de seguridad: ~12 MB reales (no deberia pasar por el limite de subida).
+    if (bytes.length > 12 * 1024 * 1024) {
+      return jsonResponse({ ok: false, error: 'El comprobante es muy grande para mostrarlo aqui.' });
+    }
+    const b64 = Utilities.base64Encode(bytes);
+    const mime = blob.getContentType() || 'application/octet-stream';
+    return jsonResponse({ ok: true, dataUrl: 'data:' + mime + ';base64,' + b64, mime: mime, filename: archivo.getName() });
+  } catch (e) {
+    console.error('verComprobante: ' + String(e));
+    return jsonResponse({ ok: false, error: 'No se pudo abrir el comprobante.' });
+  }
+}
+
 // --- obtenerCarpetaArchivos: carpeta de Drive donde viven los archivos ------
 function obtenerCarpetaArchivos() {
   const nombre = 'Co-desarrolladores-Yod - Archivos';
+  const it = DriveApp.getFoldersByName(nombre);
+  if (it.hasNext()) return it.next();
+  return DriveApp.createFolder(nombre);
+}
+
+// --- obtenerCarpetaComprobantesPrivados: carpeta PRIVADA para comprobantes ---
+//  Se crea SIN compartir: solo la cuenta dueña del script (la que ejecuta el
+//  Web App) puede leer su contenido. Los comprobantes se entregan despues con
+//  autorizacion via verComprobante(), nunca con un enlace publico.
+function obtenerCarpetaComprobantesPrivados() {
+  const nombre = 'Co-desarrolladores-Yod - Comprobantes (privado)';
   const it = DriveApp.getFoldersByName(nombre);
   if (it.hasNext()) return it.next();
   return DriveApp.createFolder(nombre);

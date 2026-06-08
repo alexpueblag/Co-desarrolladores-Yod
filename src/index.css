@@ -27,27 +27,18 @@ body {
 }
 
 /* ===================================================================
-   IMPRESION DEL ESTADO DE CUENTA (window.print -> Guardar como PDF)
-   - Oculta TODA la pantalla y muestra solo el doc marcado para imprimir.
-   - El doc imprimible vive normalmente con la clase Tailwind "hidden print:block",
-     asi que en pantalla no se ve; solo aparece al imprimir.
+   IMPRESION
+   - El estado de cuenta ahora se descarga como PDF de verdad (boton
+     "Descargar estado de cuenta (PDF)" -> jsPDF), no por window.print().
+   - Si alguien imprime con Ctrl+P, se imprime la pantalla normal; solo
+     ocultamos lo marcado como .no-print y respetamos colores de marca.
    =================================================================== */
 @media print {
-  body * { visibility: hidden; }
-  #estado-cuenta-print,
-  #estado-cuenta-print * { visibility: visible; }
-  #estado-cuenta-print {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-  }
-  /* Fuerza que se respeten los fondos/colores de marca al imprimir */
-  #estado-cuenta-print {
+  .no-print { display: none !important; }
+  body {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  .no-print { display: none !important; }
 }
 
 @page { margin: 14mm; }

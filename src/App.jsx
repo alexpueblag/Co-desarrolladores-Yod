@@ -61,6 +61,259 @@ function compartirTexto(texto) {
   try { window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); } catch (e) { /* noop */ }
 }
 
+// Normaliza un telefono a digitos con lada de pais para wa.me (Mexico = 52).
+// Acepta "(662) 123-4567", "662 1234567", "+52 662...", "0662...", "521662...".
+function telefonoWA(tel) {
+  let d = String(tel || "").replace(/\D+/g, "");
+  if (!d) return "";
+  // Quita prefijos nacionales viejos de Mexico: 044/045 (celular) y 01 (larga
+  // distancia), que quedan como basura delante del numero de 10 digitos.
+  if (d.length === 13 && (d.slice(0, 3) === "044" || d.slice(0, 3) === "045")) d = d.slice(3);
+  else if (d.length === 12 && d.slice(0, 2) === "01") d = d.slice(2);
+  if (d.length === 10) return "52" + d;                            // local MX -> +52
+  if (d.length === 12 && d.slice(0, 2) === "52") return d;         // ya trae 52
+  if (d.length === 13 && d.slice(0, 3) === "521") return "52" + d.slice(3); // viejo 521...
+  if (d.length === 11 && d[0] === "1") return d;                   // US/CA con 1
+  return d; // mejor esfuerzo
+}
+
+// Abre WhatsApp dirigido a UN numero con el mensaje ya escrito (el admin solo da
+// "enviar"). No usa navigator.share porque ese no permite fijar el destinatario.
+function recordarPorWhatsApp(tel, mensaje) {
+  const num = telefonoWA(tel);
+  const base = num ? ("https://wa.me/" + num) : "https://wa.me/";
+  try { window.open(base + "?text=" + encodeURIComponent(mensaje), "_blank"); } catch (e) { /* noop */ }
+}
+
+// Arma el texto del recordatorio de un pago (monto, fecha, proyecto + datos de
+// deposito). Usa el primer nombre del codesarrollador para un tono cercano.
+function mensajeRecordatorioPago(ap, inversionista, proyecto) {
+  const est = estadoAportacion(ap);
+  const nombre = (String(inversionista?.nombre || "").trim().split(/\s+/)[0]) || "";
+  const lineas = [];
+  lineas.push("Hola" + (nombre ? " " + nombre : "") + ", te recordamos tu aportacion" + (proyecto?.nombre ? " del proyecto " + proyecto.nombre : "") + ":");
+  lineas.push("- Monto: " + money(ap.monto));
+  lineas.push("- " + (est === "Vencida" ? "Vencio el " : "Programada para el ") + fmtFecha(ap.fechaProgramada));
+  if (ap.concepto) lineas.push("- Concepto: " + ap.concepto);
+  const banco = [];
+  if (proyecto?.banco) banco.push("Banco: " + proyecto.banco);
+  if (proyecto?.beneficiario) banco.push("Beneficiario: " + proyecto.beneficiario);
+  if (proyecto?.cuenta) banco.push("Cuenta: " + proyecto.cuenta);
+  if (proyecto?.clabe) banco.push("CLABE: " + proyecto.clabe);
+  if (banco.length) { lineas.push(""); lineas.push("Datos para depositar:"); banco.forEach((b) => lineas.push(b)); }
+  if (proyecto?.conceptoBase) lineas.push("Concepto sugerido: " + proyecto.conceptoBase);
+  lineas.push("");
+  lineas.push("Gracias. — YODESARROLLO");
+  return lineas.join("\n");
+}
+
+// Convierte un dataUrl (base64) en un Blob y lo abre en una pestana nueva
+// (robusto para imagen y PDF; evita el bloqueo de navegar a "data:" directo).
+function abrirDataUrl(dataUrl, filename) {
+  try {
+    const partes = String(dataUrl).split(",");
+    const mime = (partes[0].match(/data:([^;]+)/) || [])[1] || "application/octet-stream";
+    const bin = atob(partes[1] || "");
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, "_blank");
+    if (!w) {
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "comprobante";
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { /* noop */ }
+}
+
+// Genera y descarga el estado de cuenta como PDF de verdad (no el dialogo de
+// imprimir). Carga jsPDF bajo demanda (dynamic import) para no engordar el
+// arranque de la app. Replica el contenido del componente EstadoCuenta.
+async function descargarEstadoCuentaPDF({ inv, inversionista, proyecto, aportaciones, precios }) {
+  if (!inv) return;
+  try {
+    const { jsPDF } = await import("jspdf");
+    const autoTable = (await import("jspdf-autotable")).default;
+
+    const aps = arr(aportaciones).slice().sort((a, b) => num(a.numeroPago) - num(b.numeroPago));
+    const monto = num(inv.montoTotal);
+    const recibido = aps.filter((a) => estadoAportacion(a) === "Recibida").reduce((s, a) => s + num(a.monto), 0);
+    const programado = aps.reduce((s, a) => s + num(a.monto), 0);
+    const comprometido = monto || programado;
+    const porRecibir = Math.max(0, comprometido - recibido);
+    const liquidada = (inv.estado || "Activa") === "Liquidada";
+    const rend = calcularRendimientoInversion(inv, recibido, precios, proyecto);
+
+    const GOLD = [201, 169, 110], INK = [26, 20, 9], GREEN = [15, 122, 61], RED = [180, 35, 24], BLUE = [29, 78, 216], MUTED = [120, 120, 120], LABEL = [138, 109, 30];
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const W = doc.internal.pageSize.getWidth();
+    const PH = doc.internal.pageSize.getHeight();
+    const M = 40, gap = 10;
+    let y = 0;
+    const ensure = (need) => { if (y + need > PH - 40) { doc.addPage(); y = 50; } };
+
+    // Encabezado de marca
+    doc.setFillColor(INK[0], INK[1], INK[2]);
+    doc.rect(0, 0, W, 70, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(16); doc.setTextColor(GOLD[0], GOLD[1], GOLD[2]);
+    doc.text("YODESARROLLO", M, 40);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+    doc.text("ESTADO DE CUENTA", W - M, 30, { align: "right" });
+    doc.setFontSize(8); doc.setTextColor(180, 180, 180);
+    doc.text("Folio " + (inv.folio || "-") + "  -  Emitido " + fmtFecha(todayISO()), W - M, 45, { align: "right" });
+
+    // Datos del codesarrollador y del proyecto
+    y = 95;
+    doc.setFontSize(8); doc.setTextColor(LABEL[0], LABEL[1], LABEL[2]);
+    doc.text("CODESARROLLADOR", M, y);
+    doc.text("PROYECTO", W / 2, y);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(INK[0], INK[1], INK[2]);
+    doc.text(String(inversionista?.nombre || "-"), M, y + 16);
+    doc.text(String(proyecto?.nombre || "-"), W / 2, y + 16);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(90, 90, 90);
+    let yc = y + 30;
+    if (inversionista?.email) { doc.text(String(inversionista.email), M, yc); yc += 12; }
+    if (inversionista?.telefono) { doc.text(String(inversionista.telefono), M, yc); yc += 12; }
+    let yp = y + 30;
+    const tipoLine = (proyecto?.tipo ? proyecto.tipo : "") + (proyecto?.etapaActual ? " - Etapa: " + proyecto.etapaActual : "");
+    if (tipoLine.trim()) { doc.text(tipoLine.trim(), W / 2, yp); yp += 12; }
+    doc.text("Inicio: " + fmtFecha(inv.fechaInicio) + (liquidada ? " - Salida: " + fmtFecha(inv.fechaSalida) : ""), W / 2, yp); yp += 12;
+    y = Math.max(yc, yp) + 8;
+
+    // Totales (3 cajas)
+    const cajas = [
+      { l: "COMPROMETIDO", v: money(comprometido), c: INK },
+      { l: "RECIBIDO", v: money(recibido), c: GREEN },
+      { l: "POR RECIBIR", v: money(porRecibir), c: porRecibir > 0 ? RED : INK },
+    ];
+    const cw = (W - M * 2 - gap * 2) / 3;
+    cajas.forEach((b, i) => {
+      const x = M + i * (cw + gap);
+      doc.setDrawColor(230, 214, 176); doc.setFillColor(250, 247, 240);
+      doc.roundedRect(x, y, cw, 46, 6, 6, "FD");
+      doc.setFontSize(7.5); doc.setTextColor(LABEL[0], LABEL[1], LABEL[2]); doc.text(b.l, x + 10, y + 16);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(b.c[0], b.c[1], b.c[2]);
+      doc.text(b.v, x + 10, y + 35); doc.setFont("helvetica", "normal");
+    });
+    y += 62;
+
+    // Tabla de aportaciones
+    const filas = aps.length ? aps.map((a) => [
+      String(a.numeroPago || "") + (a.totalPagos ? "/" + a.totalPagos : ""),
+      a.concepto || ("Aportacion " + a.numeroPago),
+      fmtFecha(a.fechaProgramada),
+      a.fechaRecibida ? fmtFecha(a.fechaRecibida) : "-",
+      money(a.monto),
+      estadoAportacion(a),
+    ]) : [["", "Sin aportaciones registradas.", "", "", "", ""]];
+    autoTable(doc, {
+      startY: y,
+      head: [["#", "Concepto", "Programada", "Recibida", "Monto", "Estado"]],
+      body: filas,
+      foot: [["", "", "", "Total recibido", money(recibido), ""]],
+      margin: { left: M, right: M },
+      styles: { font: "helvetica", fontSize: 8.5, cellPadding: 4, textColor: [40, 40, 40] },
+      headStyles: { fillColor: INK, textColor: [255, 255, 255], fontStyle: "bold" },
+      footStyles: { fillColor: [245, 245, 245], textColor: INK, fontStyle: "bold" },
+      columnStyles: { 0: { cellWidth: 34 }, 4: { halign: "right" } },
+      didParseCell: (d) => {
+        if (d.section === "body" && d.column.index === 5) {
+          const e = d.cell.raw;
+          d.cell.styles.textColor = e === "Recibida" ? GREEN : e === "Vencida" ? RED : e === "En aprobacion" ? BLUE : LABEL;
+          d.cell.styles.fontStyle = "bold";
+        }
+      },
+    });
+    y = doc.lastAutoTable.finalY + 18;
+
+    // Rendimiento estimado (KPIs segun modo)
+    let kpis;
+    if (rend.modo === "plusvalia") {
+      kpis = rend.sinPrecios ? [
+        { l: "Plusvalia por etapa", v: "Datos de precio pendientes" },
+        { l: liquidada ? "Total recibido (salida)" : "Valor hoy (capital aportado)", v: money(rend.totalARecibir) },
+      ] : [
+        { l: "Plusvalia (" + rend.etapaActualLabel + ")", v: pct(rend.rendimientoPct) },
+        { l: "Precio de entrada", v: money(rend.precioEntrada) + "/m²" },
+        { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
+        { l: "Ganancia a hoy", v: money(rend.ganancia) },
+        { l: rend.hayUpside ? ("Total al vender (" + rend.etapaProyLabel + ", " + pct(rend.rendPctFinal) + ")") : "Valor estimado actual", v: money(rend.totalFinal) },
+      ];
+    } else if (rend.modo === "tramos") {
+      kpis = [
+        { l: (liquidada ? "Retorno al vender (mes " : "Retorno si se vende hoy (mes ") + rend.mesHoy + ")", v: pct(rend.rendimientoPct) },
+        { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
+        { l: "Ganancia a hoy", v: money(rend.ganancia) },
+        { l: "Total al vender (mes " + rend.mesFin + ", " + pct(rend.rendPctFinal) + ")", v: money(rend.totalFinal) },
+      ];
+    } else {
+      kpis = [
+        { l: "Periodo (" + rend.dias + " dias)", v: pct(rend.rendimientoPct) },
+        { l: "Tasa anual", v: pct(rend.tasa) },
+        { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
+        { l: "Ganancia a hoy", v: money(rend.ganancia) },
+        { l: "Total al final (si completa)", v: money(rend.totalFinal) },
+      ];
+    }
+    ensure(26);
+    doc.setFontSize(8); doc.setTextColor(LABEL[0], LABEL[1], LABEL[2]);
+    doc.text("RENDIMIENTO ESTIMADO", M, y); y += 12;
+    const per = 3, kw = (W - M * 2 - gap * 2) / per, kh = 44;
+    for (let i = 0; i < kpis.length; i += per) {
+      ensure(kh + 8);
+      for (let j = 0; j < per && i + j < kpis.length; j++) {
+        const k = kpis[i + j];
+        const x = M + j * (kw + gap);
+        doc.setDrawColor(221, 221, 221); doc.roundedRect(x, y, kw, kh, 6, 6, "S");
+        doc.setFontSize(7); doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+        doc.text(doc.splitTextToSize(String(k.l), kw - 16), x + 8, y + 13);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(INK[0], INK[1], INK[2]);
+        doc.text(String(k.v), x + 8, y + 33); doc.setFont("helvetica", "normal");
+      }
+      y += kh + 8;
+    }
+
+    // Cuenta de deposito
+    if (proyecto && (proyecto.banco || proyecto.clabe)) {
+      const partes = [];
+      if (proyecto.banco) partes.push("Banco: " + proyecto.banco);
+      if (proyecto.beneficiario) partes.push("Beneficiario: " + proyecto.beneficiario);
+      if (proyecto.cuenta) partes.push("Cuenta: " + proyecto.cuenta);
+      if (proyecto.clabe) partes.push("CLABE: " + proyecto.clabe);
+      const txt = doc.splitTextToSize(partes.join("     "), W - M * 2 - 20);
+      const bh = 26 + txt.length * 12;
+      ensure(bh + 10);
+      doc.setDrawColor(230, 214, 176); doc.setFillColor(250, 247, 240);
+      doc.roundedRect(M, y, W - M * 2, bh, 6, 6, "FD");
+      doc.setFontSize(7.5); doc.setTextColor(LABEL[0], LABEL[1], LABEL[2]); doc.text("CUENTA DE DEPOSITO", M + 10, y + 15);
+      doc.setFontSize(9); doc.setTextColor(40, 40, 40); doc.text(txt, M + 10, y + 30);
+      y += bh + 12;
+    }
+
+    // Pie / disclaimer
+    const disc = rend.modo === "plusvalia"
+      ? "Los valores son estimados y corresponden a la plusvalia por etapa de precio del terreno."
+      : rend.modo === "tramos"
+        ? "Los rendimientos son estimados y corresponden al retorno fijo segun el mes de venta de la propiedad."
+        : "Los rendimientos son estimados y se prorratean por dia conforme a la tasa preferente vigente.";
+    ensure(40);
+    doc.setFontSize(7.5); doc.setTextColor(150, 150, 150);
+    doc.text(doc.splitTextToSize("Documento informativo. No es un comprobante fiscal. " + disc + "  YODESARROLLO - Emitido el " + fmtFecha(todayISO()), W - M * 2), M, Math.min(y + 6, PH - 30));
+
+    const safe = String(inversionista?.nombre || inv.folio || "estado")
+      .normalize("NFD").replace(/[̀-ͯ]/g, "") // quita acentos -> ASCII puro
+      .replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") || "estado";
+    doc.save("Estado-de-cuenta-" + safe + ".pdf");
+  } catch (e) {
+    try {
+      console.error("descargarEstadoCuentaPDF:", String(e && e.stack ? e.stack : e));
+      window.alert("No se pudo generar el PDF: " + (e?.message || "error desconocido") + ". Intenta de nuevo.");
+    } catch (e2) { /* noop */ }
+  }
+}
+
 // "Hoy" en hora LOCAL (no UTC), para que sea coherente con parseDate(),
 // que construye la medianoche local. En Hermosillo (UTC-7), usar UTC haria
 // que de noche "hoy" salte a la fecha de manana y rompa estados/fechas.
@@ -524,7 +777,7 @@ function Textarea(props) { return <textarea {...props} className={inputCls + " r
 // Subida de archivos: arrastra o busca un archivo -> se sube a Drive (accion
 // subirArchivo) -> devuelve la URL via onSubido. 'auth' es {pass} (admin) o
 // {clave} (inversionista). Mantiene el sistema de enlaces: solo llena la URL.
-function FileUpload({ auth, onSubido, accept = "image/*,application/pdf", nota }) {
+function FileUpload({ auth, onSubido, accept = "image/*,application/pdf", nota, privado = false }) {
   const [estado, setEstado] = useState("idle"); // idle | subiendo | ok | error
   const [error, setError] = useState("");
   const [drag, setDrag] = useState(false);
@@ -541,8 +794,10 @@ function FileUpload({ auth, onSubido, accept = "image/*,application/pdf", nota }
         r.readAsDataURL(file);
       });
       const base64 = String(dataUrl).split(",")[1] || "";
-      const res = await apiCall("subirArchivo", { ...(auth || {}), filename: file.name, mime: file.type || "application/octet-stream", base64 });
-      onSubido(res.url);
+      const res = await apiCall("subirArchivo", { ...(auth || {}), filename: file.name, mime: file.type || "application/octet-stream", base64, privado });
+      // Privado (comprobantes): se guarda el fileId; se ve despues via verComprobante.
+      // Publico (avances/documentos): se guarda la URL para mostrarla directo.
+      onSubido(privado ? (res.fileId || "") : (res.url || ""));
       setEstado("ok");
     } catch (e) {
       setError(e?.message || "No se pudo subir el archivo."); setEstado("error");
@@ -561,7 +816,7 @@ function FileUpload({ auth, onSubido, accept = "image/*,application/pdf", nota }
         {estado === "subiendo" ? (
           <span className="inline-flex items-center gap-2 text-slate-500"><Spinner size={14} /> Subiendo a Drive...</span>
         ) : estado === "ok" ? (
-          <span className="inline-flex items-center gap-2 text-emerald-600"><Check size={14} /> Subido. El enlace quedo guardado abajo.</span>
+          <span className="inline-flex items-center gap-2 text-emerald-600"><Check size={14} /> {privado ? "Subido y guardado de forma segura." : "Subido. El enlace quedo guardado abajo."}</span>
         ) : (
           <span className="inline-flex items-center gap-2 text-slate-500"><Upload size={14} /> Arrastra una foto/archivo aqui, o haz clic para buscarlo</span>
         )}
@@ -570,6 +825,68 @@ function FileUpload({ auth, onSubido, accept = "image/*,application/pdf", nota }
       {nota && estado === "idle" ? <p className="text-[11px] text-slate-400 mt-1">{nota}</p> : null}
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
     </div>
+  );
+}
+
+// Muestra un comprobante respetando la privacidad. Si el valor guardado es un
+// enlace http (comprobante viejo, publico), lo abre directo. Si es un fileId
+// privado, lo pide al backend (verComprobante) con la credencial y lo abre.
+// 'auth' = {pass} (admin) o {clave} (codesarrollador/asesor). 'id' = id de la aportacion.
+function VerComprobante({ comprobante, id, auth, label = "Comprobante", soloIcono = false }) {
+  const val = comprobante ? String(comprobante).trim() : "";
+  const [estado, setEstado] = useState("idle"); // idle | cargando | error
+  const [error, setError] = useState("");
+  if (!val) return null;
+
+  const cls = "text-slate-400 hover:text-[#b8965a] inline-flex items-center gap-1 text-xs";
+
+  // Compatibilidad: comprobante viejo (URL publica) -> enlace directo.
+  if (/^https?:\/\//i.test(val)) {
+    return (
+      <a href={val} target="_blank" rel="noreferrer" className={cls}>
+        <ExternalLink size={14} />{soloIcono ? null : <span>{label}</span>}
+      </a>
+    );
+  }
+
+  const abrir = async () => {
+    setError(""); setEstado("cargando");
+    try {
+      const res = await apiCall("verComprobante", { ...(auth || {}), id });
+      if (res.vacio) { setEstado("idle"); setError("Sin comprobante."); return; }
+      if (res.url) { window.open(res.url, "_blank"); setEstado("idle"); return; }
+      if (res.dataUrl) { abrirDataUrl(res.dataUrl, res.filename); setEstado("idle"); return; }
+      setEstado("idle");
+    } catch (e) {
+      setError(e?.message || "No se pudo abrir."); setEstado("error");
+    }
+  };
+
+  return (
+    <button type="button" onClick={abrir} title="Ver comprobante" className={cls}>
+      {estado === "cargando" ? <Spinner size={14} /> : <ExternalLink size={14} />}
+      {soloIcono ? null : <span>{label}</span>}
+      {error ? <span className="text-red-500 ml-1">{error}</span> : null}
+    </button>
+  );
+}
+
+// Boton "Recordar por WhatsApp" para una aportacion (admin). Solo aparece si el
+// pago esta Vencido o Pendiente y el codesarrollador tiene telefono registrado.
+function BotonRecordarWA({ ap, inversionista, proyecto, soloIcono = false }) {
+  const est = estadoAportacion(ap);
+  if (est === "Recibida" || est === "En aprobacion") return null;
+  const tel = inversionista?.telefono;
+  if (!tel || !String(tel).trim()) return null;
+  return (
+    <button
+      type="button"
+      title="Recordar por WhatsApp"
+      onClick={() => recordarPorWhatsApp(tel, mensajeRecordatorioPago(ap, inversionista, proyecto))}
+      className="text-emerald-600 hover:text-emerald-700 p-1 rounded hover:bg-emerald-50 inline-flex items-center gap-1"
+    >
+      <MessageCircle size={16} />{soloIcono ? null : <span className="text-xs">WhatsApp</span>}
+    </button>
   );
 }
 
@@ -1546,8 +1863,8 @@ function AportacionForm({ value, onChange, pass }) {
           </Field>
         </div>
         <Field label="Comprobante / ticket" hint="Sube el archivo (arrastra o busca) o pega un enlace.">
-          <FileUpload auth={{ pass }} onSubido={(url) => set("comprobanteUrl", url)} nota="Foto (JPG/PNG) o PDF, max ~10 MB. Se guarda en tu Drive." />
-          <Input value={value.comprobanteUrl || ""} onChange={(e) => set("comprobanteUrl", e.target.value)} placeholder="https://... (se llena solo al subir)" className="mt-2" />
+          <FileUpload auth={{ pass }} privado onSubido={(fileId) => set("comprobanteUrl", fileId)} nota="Foto (JPG/PNG) o PDF, max ~10 MB. Se guarda PRIVADO (solo visible con permiso)." />
+          <Input value={value.comprobanteUrl || ""} onChange={(e) => set("comprobanteUrl", e.target.value)} placeholder="Se llena solo al subir (o pega un enlace)" className="mt-2" />
         </Field>
       </div>
     </div>
@@ -2005,7 +2322,7 @@ function AdminApp({ pass, onLogout }) {
                             <div className="text-sm mt-0.5">Reporto <b className="tabular-nums">{money(reportado)}</b>{difiere ? <span className="text-amber-700"> (programado {money(a.monto)})</span> : null}</div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                            {a.comprobanteUrl ? <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 inline-flex items-center gap-1"><ExternalLink size={13} /> Comprobante</a> : null}
+                            <VerComprobante comprobante={a.comprobanteUrl} id={a.id} auth={{ pass }} />
                             <Btn variant="outline" onClick={() => setModal({ tab: "Aportaciones", row: { ...a }, esNuevo: false })}><Pencil size={14} /> Revisar</Btn>
                             <Btn variant="success" onClick={() => confirmarPagoReportado(a, reportado)}><Check size={15} /> Confirmar recibido</Btn>
                           </div>
@@ -2157,6 +2474,7 @@ function AdminApp({ pass, onLogout }) {
           <DetalleInversion
             folio={inversionAbierta}
             data={data}
+            pass={pass}
             inversionistaPorId={inversionistaPorId}
             proyectoPorId={proyectoPorId}
             aportacionesDeFolio={aportacionesDeFolio}
@@ -2798,7 +3116,7 @@ function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEdi
 }
 
 function DetalleInversion({
-  folio, data, inversionistaPorId, proyectoPorId, aportacionesDeFolio, documentosDeFolio, capitalRecibido,
+  folio, data, pass, inversionistaPorId, proyectoPorId, aportacionesDeFolio, documentosDeFolio, capitalRecibido,
   onVolver, onEditarInversion, onNuevaAportacion, onEditarAportacion, onEliminarAportacion,
   onMarcarRecibida, onGuardarComprobante, onGenerarPlan, onNuevoDocumento, onEliminarDocumento,
   onAbrirProyecto,
@@ -2835,7 +3153,7 @@ function DetalleInversion({
         </div>
         <div className="w-full sm:w-auto sm:ml-auto flex flex-wrap items-center gap-2">
           <EstadoInversionBadge estado={inv.estado || "Activa"} />
-          <Btn variant="outline" onClick={() => window.print()}><Printer size={15} /> Estado de cuenta</Btn>
+          <Btn variant="outline" onClick={() => descargarEstadoCuentaPDF({ inv, inversionista, proyecto, aportaciones, precios: data.preciosPlusvalia })}><Printer size={15} /> Estado de cuenta (PDF)</Btn>
           <Btn variant="outline" onClick={() => onEditarInversion(inv)}><Pencil size={15} /> Editar</Btn>
         </div>
       </div>
@@ -2920,16 +3238,15 @@ function DetalleInversion({
                               const nv = compEdit[a.id];
                               if (nv !== undefined && nv !== (a.comprobanteUrl || "")) onGuardarComprobante(a, nv);
                             }}
-                            placeholder="URL comprobante"
+                            placeholder="Enlace o ID de archivo"
                             className="w-28 sm:w-36 rounded-md border border-slate-200 px-2 py-1 text-xs"
                           />
-                          {a.comprobanteUrl ? (
-                            <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a]"><ExternalLink size={14} /></a>
-                          ) : null}
+                          <VerComprobante comprobante={a.comprobanteUrl} id={a.id} auth={{ pass }} soloIcono />
                         </div>
                       </td>
                       <td className="px-2 py-2">
                         <div className="flex gap-1 justify-end">
+                          <BotonRecordarWA ap={a} inversionista={inversionista} proyecto={proyecto} soloIcono />
                           {est !== "Recibida" && (
                             <button onClick={() => onMarcarRecibida(a)} title="Registrar pago (marcar recibido)" className="text-emerald-600 hover:text-emerald-700 p-1 rounded hover:bg-emerald-50">
                               <CheckCircle2 size={16} />
@@ -2985,8 +3302,6 @@ function DetalleInversion({
         {inv.proyectoId ? <Btn variant="outline" onClick={() => onAbrirProyecto(inv.proyectoId)}>Abrir proyecto <ChevronRight size={15} /></Btn> : null}
       </div>
 
-      {/* Estado de cuenta imprimible (solo visible al imprimir) */}
-      <EstadoCuenta inv={inv} inversionista={inversionista} proyecto={proyecto} aportaciones={aportaciones} precios={data.preciosPlusvalia} />
     </div>
   );
 }
@@ -3000,168 +3315,6 @@ function IconBtn({ onClick, icon: Icon, title, danger }) {
     >
       <Icon size={16} />
     </button>
-  );
-}
-
-// ===================================================================
-// ESTADO DE CUENTA IMPRIMIBLE (a PDF via "Imprimir > Guardar como PDF")
-// ===================================================================
-// Documento limpio que solo se ve al imprimir (clase "hidden print:block").
-// Reutiliza los helpers money/fmtFecha/num/pct/calcularRendimiento/estadoAportacion.
-// Lleva el id #estado-cuenta-print para que el CSS @media print de index.css
-// oculte el resto de la pantalla y muestre solo este bloque.
-// IMPORTANTE: solo puede haber UN #estado-cuenta-print visible al imprimir.
-// En la vista del inversionista (que puede tener varias inversiones) se controla
-// con la prop "activo": solo el seleccionado lleva el id y la clase print:block.
-function EstadoCuenta({ inv, inversionista, proyecto, aportaciones, activo = true, precios }) {
-  if (!inv) return null;
-  const aps = arr(aportaciones).slice().sort((a, b) => num(a.numeroPago) - num(b.numeroPago));
-  const monto = num(inv.montoTotal);
-  const recibido = aps.filter(a => estadoAportacion(a) === "Recibida").reduce((s, a) => s + num(a.monto), 0);
-  const programado = aps.reduce((s, a) => s + num(a.monto), 0);
-  const comprometido = monto || programado;
-  const porRecibir = Math.max(0, comprometido - recibido);
-
-  const liquidada = (inv.estado || "Activa") === "Liquidada";
-  const rend = calcularRendimientoInversion(inv, recibido, precios, proyecto);
-
-  const labelEstado = (e) => {
-    const t = e === "Recibida" ? "#0f7a3d" : e === "Vencida" ? "#b42318" : e === "En aprobacion" ? "#1d4ed8" : "#8a6d1e";
-    return <span style={{ color: t, fontWeight: 600 }}>{e}</span>;
-  };
-
-  return (
-    <div
-      id={activo ? "estado-cuenta-print" : undefined}
-      className={activo ? "hidden print:block" : "hidden"}
-      style={{ background: "#fff", color: "#1a1409", fontSize: "12px" }}
-    >
-      {/* Encabezado de marca */}
-      <div style={{ background: "#1a1409", padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <img src={logoWhite} alt="YODESARROLLO" style={{ height: "26px", mixBlendMode: "screen" }} />
-        <div style={{ textAlign: "right", color: "#d4be8a" }}>
-          <div style={{ fontSize: "13px", letterSpacing: "0.18em", textTransform: "uppercase" }}>Estado de cuenta</div>
-          <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.6)", marginTop: "2px" }}>Folio {inv.folio} · Emitido {fmtFecha(todayISO())}</div>
-        </div>
-      </div>
-
-      <div style={{ padding: "20px 24px" }}>
-        {/* Datos del codesarrollador y del proyecto */}
-        <div style={{ display: "flex", gap: "24px", flexWrap: "wrap", marginBottom: "16px" }}>
-          <div style={{ flex: "1 1 220px" }}>
-            <div style={{ fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "4px" }}>Codesarrollador</div>
-            <div style={{ fontWeight: 600, fontSize: "14px" }}>{inversionista?.nombre || "—"}</div>
-            {inversionista?.email ? <div style={{ color: "#555" }}>{inversionista.email}</div> : null}
-            {inversionista?.telefono ? <div style={{ color: "#555" }}>{inversionista.telefono}</div> : null}
-          </div>
-          <div style={{ flex: "1 1 220px" }}>
-            <div style={{ fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "4px" }}>Proyecto</div>
-            <div style={{ fontWeight: 600, fontSize: "14px" }}>{proyecto?.nombre || "—"}</div>
-            {proyecto?.tipo ? <div style={{ color: "#555" }}>{proyecto.tipo}{proyecto?.etapaActual ? ` · Etapa: ${proyecto.etapaActual}` : ""}</div> : null}
-            <div style={{ color: "#555" }}>Inicio: {fmtFecha(inv.fechaInicio)}{liquidada ? ` · Salida: ${fmtFecha(inv.fechaSalida)}` : ""}</div>
-          </div>
-        </div>
-
-        {/* Totales */}
-        <div style={{ display: "flex", gap: "10px", marginBottom: "18px", flexWrap: "wrap" }}>
-          {[
-            { l: "Comprometido", v: money(comprometido) },
-            { l: "Recibido", v: money(recibido), c: "#0f7a3d" },
-            { l: "Por recibir", v: money(porRecibir), c: porRecibir > 0 ? "#b42318" : "#1a1409" },
-          ].map((t) => (
-            <div key={t.l} style={{ flex: "1 1 120px", border: "1px solid #e6d6b0", borderRadius: "10px", padding: "10px 12px", background: "#faf7f0" }}>
-              <div style={{ fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e" }}>{t.l}</div>
-              <div style={{ fontSize: "16px", fontWeight: 700, marginTop: "2px", color: t.c || "#1a1409" }}>{t.v}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Calendario de aportaciones */}
-        <div style={{ fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "6px" }}>Calendario de aportaciones</div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", marginBottom: "18px" }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid #1a1409", textAlign: "left" }}>
-              <th style={{ padding: "6px 6px" }}>#</th>
-              <th style={{ padding: "6px 6px" }}>Concepto</th>
-              <th style={{ padding: "6px 6px" }}>Programada</th>
-              <th style={{ padding: "6px 6px" }}>Recibida</th>
-              <th style={{ padding: "6px 6px", textAlign: "right" }}>Monto</th>
-              <th style={{ padding: "6px 6px" }}>Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-            {aps.length === 0 ? (
-              <tr><td colSpan={6} style={{ padding: "10px 6px", color: "#888" }}>Sin aportaciones registradas.</td></tr>
-            ) : aps.map((a) => (
-              <tr key={a.id} style={{ borderBottom: "1px solid #eee" }}>
-                <td style={{ padding: "6px 6px" }}>{a.numeroPago}{a.totalPagos ? `/${a.totalPagos}` : ""}</td>
-                <td style={{ padding: "6px 6px" }}>{a.concepto || `Aportacion ${a.numeroPago}`}{a.referencia ? <div style={{ color: "#888", fontSize: "10px" }}>Ref: {a.referencia}</div> : null}</td>
-                <td style={{ padding: "6px 6px" }}>{fmtFecha(a.fechaProgramada)}</td>
-                <td style={{ padding: "6px 6px" }}>{a.fechaRecibida ? fmtFecha(a.fechaRecibida) : "—"}</td>
-                <td style={{ padding: "6px 6px", textAlign: "right", fontWeight: 600 }}>{money(a.monto)}</td>
-                <td style={{ padding: "6px 6px" }}>{labelEstado(estadoAportacion(a))}</td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr style={{ borderTop: "2px solid #1a1409", fontWeight: 700 }}>
-              <td colSpan={4} style={{ padding: "6px 6px", textAlign: "right" }}>Total recibido</td>
-              <td style={{ padding: "6px 6px", textAlign: "right", color: "#0f7a3d" }}>{money(recibido)}</td>
-              <td></td>
-            </tr>
-          </tfoot>
-        </table>
-
-        {/* Rendimiento estimado */}
-        <div style={{ fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "6px" }}>Rendimiento estimado</div>
-        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "16px" }}>
-          {(rend.modo === "plusvalia" ? (rend.sinPrecios ? [
-            { l: "Plusvalia por etapa", v: "Datos de precio pendientes", c: "#8a6d1e" },
-            { l: liquidada ? "Total recibido (salida)" : "Valor hoy (capital aportado)", v: money(rend.totalARecibir) },
-          ] : [
-            { l: `Plusvalia (${rend.etapaActualLabel})`, v: pct(rend.rendimientoPct) },
-            { l: "Precio de entrada", v: `${money(rend.precioEntrada)}/m²` },
-            { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
-            { l: "Ganancia a hoy", v: money(rend.ganancia), c: "#8a6d1e" },
-            { l: rend.hayUpside ? `Total al vender (${rend.etapaProyLabel}, ${pct(rend.rendPctFinal)})` : "Valor estimado actual", v: money(rend.totalFinal) },
-          ]) : rend.modo === "tramos" ? [
-            { l: liquidada ? `Retorno al vender (mes ${rend.mesHoy})` : `Retorno si se vende hoy (mes ${rend.mesHoy})`, v: pct(rend.rendimientoPct) },
-            { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
-            { l: "Ganancia a hoy", v: money(rend.ganancia), c: "#8a6d1e" },
-            { l: `Total al vender (mes ${rend.mesFin}, ${pct(rend.rendPctFinal)})`, v: money(rend.totalFinal) },
-          ] : [
-            { l: `Periodo (${rend.dias} dias)`, v: pct(rend.rendimientoPct) },
-            { l: `Tasa anual`, v: pct(rend.tasa) },
-            { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
-            { l: "Ganancia a hoy", v: money(rend.ganancia), c: "#8a6d1e" },
-            { l: "Total al final (si completa)", v: money(rend.totalFinal) },
-          ]).map((t) => (
-            <div key={t.l} style={{ flex: "1 1 120px", border: "1px solid #ddd", borderRadius: "10px", padding: "10px 12px" }}>
-              <div style={{ fontSize: "10px", color: "#888" }}>{t.l}</div>
-              <div style={{ fontSize: "15px", fontWeight: 700, marginTop: "2px", color: t.c || "#1a1409" }}>{t.v}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Cuenta de deposito */}
-        {proyecto && (proyecto.banco || proyecto.clabe) ? (
-          <div style={{ border: "1px solid #e6d6b0", borderRadius: "10px", padding: "10px 12px", marginBottom: "16px", background: "#faf7f0" }}>
-            <div style={{ fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "4px" }}>Cuenta de deposito</div>
-            <div style={{ display: "flex", gap: "20px", flexWrap: "wrap", fontSize: "11px" }}>
-              {proyecto.banco ? <div><b>Banco:</b> {proyecto.banco}</div> : null}
-              {proyecto.beneficiario ? <div><b>Beneficiario:</b> {proyecto.beneficiario}</div> : null}
-              {proyecto.cuenta ? <div><b>Cuenta:</b> {proyecto.cuenta}</div> : null}
-              {proyecto.clabe ? <div><b>CLABE:</b> {proyecto.clabe}</div> : null}
-            </div>
-          </div>
-        ) : null}
-
-        {/* Pie */}
-        <div style={{ borderTop: "1px solid #ddd", paddingTop: "10px", fontSize: "10px", color: "#999", textAlign: "center" }}>
-          Documento informativo. No es un comprobante fiscal. {rend.modo === "plusvalia" ? "Los valores son estimados y corresponden a la plusvalia por etapa de precio del terreno." : rend.modo === "tramos" ? "Los rendimientos son estimados y corresponden al retorno fijo segun el mes de venta de la propiedad." : "Los rendimientos son estimados y se prorratean por dia conforme a la tasa preferente vigente."} · YODESARROLLO · Emitido el {fmtFecha(todayISO())}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -3229,6 +3382,7 @@ function ListaPagos({ data, inversionistaPorId, onAbrir, onEditar }) {
   const [filtro, setFiltro] = useState("Por validar");
   const inversiones = arr(data.Inversiones);
   const invPorFolio = (folio) => inversiones.find((i) => String(i.folio) === String(folio));
+  const proyectoPorId = (id) => arr(data.Proyectos).find((p) => String(p.id) === String(id));
   const todas = arr(data.Aportaciones).map((a) => ({ ...a, _estado: estadoAportacion(a) }));
   const cont = {};
   todas.forEach((a) => { cont[a._estado] = (cont[a._estado] || 0) + 1; });
@@ -3260,7 +3414,9 @@ function ListaPagos({ data, inversionistaPorId, onAbrir, onEditar }) {
         <div className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
           {lista.map((a) => {
             const iv = invPorFolio(a.folio);
-            const nombre = iv ? (inversionistaPorId(iv.inversionistaId)?.nombre || "—") : "—";
+            const invsta = iv ? inversionistaPorId(iv.inversionistaId) : null;
+            const proy = iv ? proyectoPorId(iv.proyectoId) : null;
+            const nombre = invsta?.nombre || "—";
             return (
               <div key={a.id} className="p-3 flex items-center gap-3">
                 <div className="min-w-0 flex-1">
@@ -3272,6 +3428,7 @@ function ListaPagos({ data, inversionistaPorId, onAbrir, onEditar }) {
                   <EstadoAportacionBadge ap={a} />
                 </div>
                 <div className="flex gap-1 shrink-0">
+                  <BotonRecordarWA ap={a} inversionista={invsta} proyecto={proy} soloIcono />
                   <IconBtn onClick={() => onEditar(a)} icon={Pencil} title="Editar / validar" />
                   <IconBtn onClick={() => onAbrir(a.folio)} icon={ChevronRight} title="Abrir inversion" />
                 </div>
@@ -3693,10 +3850,6 @@ function InvestorApp({ clave, onLogout, onClaveCambiada }) {
   const [compDraft, setCompDraft] = useState("");
   const [montoDraft, setMontoDraft] = useState("");
   const [lightbox, setLightbox] = useState(null);
-  // Folio de la inversion seleccionada para imprimir su estado de cuenta.
-  // Solo ese documento lleva el id #estado-cuenta-print (los demas quedan ocultos),
-  // asi un codesarrollador con 2+ inversiones imprime la que eligio.
-  const [printFolio, setPrintFolio] = useState(null);
   const [panel, setPanel] = useState(null); // 'cuenta' | 'duda' | 'invitar'
   const [comoModal, setComoModal] = useState(null); // { rend, proyectoNombre }
   const [toast, setToast] = useState(null);
@@ -3705,13 +3858,6 @@ function InvestorApp({ clave, onLogout, onClaveCambiada }) {
     setToast({ msg, tipo });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3000);
-  }, []);
-
-  // Marca la inversion a imprimir y dispara la impresion en el siguiente frame
-  // (para que React ya haya aplicado el id #estado-cuenta-print antes de window.print()).
-  const imprimirEstado = useCallback((folio) => {
-    setPrintFolio(folio);
-    requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
   }, []);
 
   const cargar = useCallback(async () => {
@@ -3902,7 +4048,7 @@ function InvestorApp({ clave, onLogout, onClaveCambiada }) {
                       <div className="flex items-center gap-2 mb-1"><Clock size={16} className="text-blue-600" /><div className="text-[11px] font-semibold uppercase tracking-wide text-blue-700">Pago en validacion</div></div>
                       <div className="text-lg font-semibold text-slate-800">Reportaste {money(proximo.montoReportado || proximo.monto)}</div>
                       <div className="text-sm text-slate-500 mt-0.5">{proximo.referencia ? <>Referencia: <b>{proximo.referencia}</b>. </> : null}Lo estamos validando; te avisaremos en cuanto quede como <b>Recibido</b>.</div>
-                      {proximo.comprobanteUrl ? <a href={proximo.comprobanteUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 inline-flex items-center gap-1 mt-2"><ExternalLink size={13} /> Ver mi comprobante</a> : null}
+                      <div className="mt-2"><VerComprobante comprobante={proximo.comprobanteUrl} id={proximo.id} auth={{ clave }} label="Ver mi comprobante" /></div>
                     </div>
                   ) : !liquidada && proximo ? (
                     <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
@@ -3937,8 +4083,8 @@ function InvestorApp({ clave, onLogout, onClaveCambiada }) {
                             <Input type="number" value={montoDraft} onChange={(e) => setMontoDraft(e.target.value)} placeholder={String(proximo.monto || "")} />
                           </Field>
                           <Input value={refDraft} onChange={(e) => setRefDraft(e.target.value)} placeholder="Numero de referencia / clave de rastreo" />
-                          <FileUpload auth={{ clave }} onSubido={(url) => setCompDraft(url)} nota="Sube la foto de tu comprobante (o pega el link abajo)." />
-                          <Input value={compDraft} onChange={(e) => setCompDraft(e.target.value)} placeholder="Link del comprobante (se llena solo al subir)" />
+                          <FileUpload auth={{ clave }} privado onSubido={(fileId) => setCompDraft(fileId)} nota="Sube la foto de tu comprobante (queda privado: solo tu y el equipo)." />
+                          <Input value={compDraft} onChange={(e) => setCompDraft(e.target.value)} placeholder="Se llena solo al subir (o pega un enlace)" />
                           <div className="flex items-center gap-2">
                             <Btn variant="gold" disabled={!montoDraft || Number(montoDraft) <= 0} onClick={() => enviarReporte(proximo.id)}><Check size={15} /> Enviar reporte</Btn>
                             <button onClick={() => setReportando(null)} className="text-sm text-slate-500 px-2">Cancelar</button>
@@ -4044,7 +4190,7 @@ function InvestorApp({ clave, onLogout, onClaveCambiada }) {
                               <td className="py-2 text-slate-400 text-xs">{fmtFecha(a.fechaProgramada)}</td>
                               <td className="py-2 text-right tabular-nums font-medium text-slate-800">{money(a.monto)}</td>
                               <td className="py-2 text-right"><EstadoAportacionBadge ap={a} /></td>
-                              <td className="py-2 text-right">{a.comprobanteUrl ? <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a] inline-block"><ExternalLink size={14} /></a> : null}</td>
+                              <td className="py-2 text-right"><VerComprobante comprobante={a.comprobanteUrl} id={a.id} auth={{ clave }} soloIcono /></td>
                             </tr>
                           ))}
                         </tbody>
@@ -4065,23 +4211,12 @@ function InvestorApp({ clave, onLogout, onClaveCambiada }) {
                       </div>
                     )}
                     <div className="mt-4 pt-4 border-t border-slate-100">
-                      <Btn variant="outline" onClick={() => imprimirEstado(iv.folio)} className="w-full sm:w-auto">
+                      <Btn variant="outline" onClick={() => descargarEstadoCuentaPDF({ inv: iv, inversionista: inv, proyecto, aportaciones: aps, precios: data?.preciosPlusvalia })} className="w-full sm:w-auto">
                         <Printer size={15} /> Descargar estado de cuenta (PDF)
                       </Btn>
-                      <p className="text-[11px] text-slate-400 mt-1.5">Se abre el dialogo de impresion; elige "Guardar como PDF".</p>
+                      <p className="text-[11px] text-slate-400 mt-1.5">Se descarga un PDF con el detalle de tu inversion.</p>
                     </div>
                   </details>
-
-                  {/* Estado de cuenta imprimible de esta inversion (solo visible al imprimir,
-                      y solo el folio seleccionado lleva el id #estado-cuenta-print). */}
-                  <EstadoCuenta
-                    inv={iv}
-                    inversionista={inv}
-                    proyecto={proyecto}
-                    aportaciones={aps}
-                    activo={printFolio === iv.folio}
-                    precios={data?.preciosPlusvalia}
-                  />
                 </div>
               );
             })}
