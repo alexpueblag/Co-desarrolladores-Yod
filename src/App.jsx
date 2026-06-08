@@ -15,17 +15,30 @@ import logoWhite from './assets/logo_white.png';
 // PEGA AQUI la URL del Web App del Apps Script (termina en /exec).
 // Mientras siga el placeholder, la app muestra un aviso de "Falta conectar el backend".
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxoW0hz0nInT208B8L_WNEpYNW0iPTMNWosl3m3TG9VO6WVRVqh90xKLLSLRQCTEB9O3A/exec";
+// URL publica del portal (para compartir / invitar).
+const SITIO_URL = "https://alexpueblag.github.io/Co-desarrolladores-Yod/";
 
 const ADMIN_KEY = "codeyod-admin-v1";       // bandera de sesion admin + pass tecleada (solo en este navegador)
 const INVESTOR_KEY = "codeyod-investor-v1"; // bandera de sesion inversionista + clave tecleada
+const ASESOR_KEY = "codeyod-asesor-v1";     // bandera de sesion asesor + clave tecleada
 const CACHE_KEY = "codeyod-cache-v1";       // respaldo de getAll para arranque offline
 
-const TABS = ["Inversionistas", "Proyectos", "Inversiones", "Aportaciones", "Documentos", "Avances", "Bitacora"];
+const TABS = ["Inversionistas", "Proyectos", "Inversiones", "Aportaciones", "Documentos", "Avances", "Bitacora", "Asesores", "Referidos"];
 // Singular legible de cada pestana para los titulos de los modales.
-const SINGULAR_TAB = { Inversionistas: "Codesarrollador", Proyectos: "proyecto", Inversiones: "inversion", Aportaciones: "aportacion", Documentos: "documento", Avances: "avance", Bitacora: "nota" };
+const SINGULAR_TAB = { Inversionistas: "Codesarrollador", Proyectos: "proyecto", Inversiones: "inversion", Aportaciones: "aportacion", Documentos: "documento", Avances: "avance", Bitacora: "nota", Asesores: "asesor", Referidos: "referido" };
 
 // Tipos de proyecto y etapas sugeridas (flexibles: sirven para obra y desarrollo urbano).
 const TIPOS_PROYECTO = ["Obra", "Desarrollo urbano", "Lotificacion", "Otro"];
+// Etapas de precio para proyectos de PLUSVALIA (terreno/lote). Las claves
+// coinciden con las que devuelve el backend (leidas en vivo de la hoja de precios).
+const ETAPAS_PLUSVALIA = [
+  { key: "fund2", label: "Fundador II" },
+  { key: "preventa1", label: "Preventa I" },
+  { key: "preventa2", label: "Preventa II" },
+  { key: "venta", label: "Venta" },
+  { key: "mercado24", label: "Mercado (24m)" },
+];
+const etiquetaEtapaPlusvalia = (k) => (ETAPAS_PLUSVALIA.find((e) => e.key === k) || {}).label || k || "—";
 const ETAPAS_SUGERIDAS = ["Permisos", "Urbanizacion", "Cimentacion", "Estructura", "Acabados", "Comercializacion", "Entrega"];
 const TASA_DEFAULT = 25;
 
@@ -35,6 +48,18 @@ const TASA_DEFAULT = 25;
 const mxn = new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 });
 function money(n) { const v = Number(n); return isFinite(v) ? mxn.format(v) : mxn.format(0); }
 function pct(n) { const v = Number(n); return (isFinite(v) ? v : 0).toFixed(2) + "%"; }
+
+// Comparte un texto: usa el menu nativo del celular (WhatsApp, etc.) si existe;
+// si no (escritorio), abre WhatsApp Web/app con el mensaje listo.
+function compartirTexto(texto) {
+  try {
+    if (typeof navigator !== "undefined" && navigator.share) {
+      navigator.share({ text: texto }).catch(() => {});
+      return;
+    }
+  } catch (e) { /* cae a WhatsApp */ }
+  try { window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); } catch (e) { /* noop */ }
+}
 
 // "Hoy" en hora LOCAL (no UTC), para que sea coherente con parseDate(),
 // que construye la medianoche local. En Hermosillo (UTC-7), usar UTC haria
@@ -108,6 +133,172 @@ function calcularRendimiento(capital, fechaInicio, fechaSalida, tasaAnual) {
   return { dias, rendimientoPct, totalARecibir, ganancia, tasa };
 }
 
+// fechaCorteRendimiento: hasta que fecha se acumula el rendimiento "al dia de HOY".
+//  - Liquidada (estado === "Liquidada"): hasta su fecha de salida (valor final real).
+//  - Activa: hasta HOY, SIN pasar de la fecha de salida (= dias transcurridos).
+//  IMPORTANTE: antes el codigo usaba la fecha de salida (futura) aunque la
+//  inversion siguiera ACTIVA, contando dias de mas e inflando el rendimiento.
+//  Tener una fecha de salida planeada NO significa que ya este liquidada.
+function fechaCorteRendimiento(inv) {
+  const hoy = todayISO();
+  const salida = inv && inv.fechaSalida && String(inv.fechaSalida).trim() ? String(inv.fechaSalida).trim() : "";
+  const liquidada = ((inv && inv.estado) || "Activa") === "Liquidada";
+  if (liquidada) return salida || hoy;
+  if (salida) return hoy < salida ? hoy : salida; // min(hoy, salida)
+  return hoy;
+}
+
+// calcularRendimientoInversion: rendimiento REAL de una inversion del portal.
+//  Regla de negocio (definida con Alejandro):
+//   - VALOR HOY: el rendimiento se gana sobre el CAPITAL YA APORTADO (no sobre
+//     el monto comprometido), contando desde la FECHA DE INICIO hasta el corte
+//     (hoy si esta activa; su fecha de salida si ya esta liquidada).
+//   - TOTAL AL FINAL (proyeccion): sobre el monto COMPROMETIDO completo, por
+//     todo el plazo (inicio -> fecha de salida), suponiendo que complete sus
+//     aportaciones. Es solo una estimacion informativa.
+//  Soporta DOS modos:
+//   - "anual": tasa anual sobre lo aportado (prorrateada por dia). Lo normal.
+//   - "tramos": retorno FIJO (no anualizado) segun el MES DE VENTA, por tabla de
+//     tramos (ej. vender en mes 1-6 => 12.5% del capital; 6-8 => 16.67%...).
+//  El modo "tramos" se activa cuando la inversion trae 'tramos' (JSON no vacio).
+//  Devuelve campos compatibles (dias/rendimientoPct/ganancia/totalARecibir +
+//  rendPctFinal/gananciaFinal/totalFinal) + 'modo' y, en tramos, mesHoy/mesFin.
+function parseTramos(raw) {
+  if (!raw) return [];
+  try {
+    const t = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(t)) return [];
+    // Solo tramos COMPLETOS y validos: si una fila esta a medio capturar (sin %
+    // o sin 'hasta'), se IGNORA. Si no queda ninguna valida, devuelve [] y la
+    // inversion sigue en MODO ANUAL (no se pisa la tasa normal con 0%). Se
+    // normaliza a numeros y se ORDENA por mes, para que la busqueda y el tope
+    // no dependan del orden en que se capturaron.
+    return t
+      .filter((x) => x
+        && String(x.desde).trim() !== "" && Number.isFinite(Number(x.desde)) && Number(x.desde) >= 1
+        && String(x.hasta).trim() !== "" && Number.isFinite(Number(x.hasta)) && Number(x.hasta) >= Number(x.desde)
+        && String(x.pct).trim() !== "" && Number.isFinite(Number(x.pct)))
+      .map((x) => ({ desde: Number(x.desde), hasta: Number(x.hasta), pct: Number(x.pct) }))
+      .sort((a, b) => (a.desde - b.desde) || (a.hasta - b.hasta));
+  } catch (e) { return []; }
+}
+// Mes-etiqueta para tramos (1-based). Dia 0 -> mes 1; aniversario EXACTO de N
+// meses -> mes N (cierra el mes recien cumplido, no salta al siguiente); parcial
+// -> mes en curso (N+1). Sin fecha valida -> 0 (no rinde). Esto evita el
+// off-by-one en la frontera (vender justo a los 6 meses = mes 6, no mes 7).
+function mesParaTramo(inicio, fin) {
+  const a = parseDate(inicio), b = parseDate(fin);
+  if (!a || !b) return 0;
+  let m = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+  if (b.getDate() < a.getDate()) m -= 1; // aun no cumple el mes
+  m = Math.max(0, m);
+  const esAniversario = b.getDate() === a.getDate();
+  return Math.max(1, esAniversario ? m : m + 1);
+}
+// % del tramo segun el mes. Match directo por rango [desde,hasta]; si cae en un
+// HUECO o despues del ultimo tramo, hereda el % del tramo inferior mas cercano
+// (retorno monotono, no "baja" a 0); antes del primer tramo (o sin mes) -> 0.
+function pctTramo(tramos, mesEnCurso) {
+  if (!tramos.length || !mesEnCurso) return 0;
+  for (let i = 0; i < tramos.length; i++) {
+    if (mesEnCurso >= tramos[i].desde && mesEnCurso <= tramos[i].hasta) return tramos[i].pct;
+  }
+  let mejor = null;
+  for (let i = 0; i < tramos.length; i++) {
+    if (tramos[i].hasta < mesEnCurso && (mejor === null || tramos[i].hasta > mejor.hasta)) mejor = tramos[i];
+  }
+  return mejor ? mejor.pct : 0;
+}
+
+function calcularRendimientoInversion(inv, capitalRecibido, precios, proyecto) {
+  const monto = num(inv.montoTotal);
+  const recibido = num(capitalRecibido);
+
+  // ----- MODO PLUSVALIA: el valor sube por ETAPA de precio del terreno -----
+  //  Se activa cuando el PROYECTO esta marcado como plusvalia (proyecto.plusvaliaKey).
+  //  - precio ACTUAL = precio de la etapa actual del PROYECTO (proyecto.etapaPrecio),
+  //    leido en vivo de la hoja. Aplica a TODOS los codesarrolladores del proyecto.
+  //  - precio de ENTRADA = el capturado a mano en la inversion (inv.precioEntrada),
+  //    por si entro en una etapa que no esta en la hoja (ej. Fundador I).
+  //  valor hoy = capital aportado x (precioActual / precioEntrada). Proyeccion a
+  //  la etapa "Venta", sobre el monto comprometido. Si faltan datos, avisa (sinPrecios)
+  //  y NUNCA cae a tasa anual (mostraria un % que no corresponde a un terreno).
+  const claveP = proyecto && proyecto.plusvaliaKey && String(proyecto.plusvaliaKey).trim() ? String(proyecto.plusvaliaKey).trim() : "";
+  if (claveP) {
+    const tablaP = precios && precios[claveP] && precios[claveP].etapas ? precios[claveP].etapas : null;
+    const etapaAct = (proyecto.etapaPrecio || "").trim();
+    const liq = (inv.estado || "Activa") === "Liquidada";
+    const pSalida = Number(inv.precioSalida) || 0;
+    const pActualStage = tablaP ? (Number(tablaP[etapaAct]) || 0) : 0;
+    // Al LIQUIDAR se congela el valor en el precio de salida capturado; ya no
+    // sigue la etapa del proyecto. Si no se capturo, cae a la etapa actual.
+    const pActual = (liq && pSalida > 0) ? pSalida : pActualStage;
+    const pEntrada = Number(inv.precioEntrada) || 0;
+    const baseP = {
+      modo: "plusvalia", monto, recibido, precioEntrada: pEntrada,
+      etapaActualLabel: liq ? "Salida" : etiquetaEtapaPlusvalia(etapaAct),
+    };
+    if (pEntrada > 0 && pActual > 0) {
+      // Liquidada: no hay proyeccion futura (ya se cerro). Activa: proyecta a "Venta".
+      const pVentaRaw = liq ? 0 : (tablaP ? (Number(tablaP.venta) || 0) : 0);
+      const hayVenta = pVentaRaw > 0;
+      const pProy = liq ? pActual : Math.max(pVentaRaw, pActual);
+      const etapaProyLabel = liq ? "Salida" : ((pVentaRaw > 0 && pVentaRaw > pActual) ? "Venta" : etiquetaEtapaPlusvalia(etapaAct));
+      const factorHoy = pActual / pEntrada;
+      const factorFin = pProy / pEntrada;
+      const totalARecibir = recibido * factorHoy;
+      const totalFinal = monto * factorFin;
+      return {
+        ...baseP, sinPrecios: false, hayVenta, etapaProyLabel,
+        hayUpside: !liq && totalFinal > totalARecibir + 0.5,
+        precioActual: pActual, precioVenta: pProy,
+        rendimientoPct: (factorHoy - 1) * 100, ganancia: totalARecibir - recibido, totalARecibir,
+        rendPctFinal: (factorFin - 1) * 100, gananciaFinal: totalFinal - monto, totalFinal,
+      };
+    }
+    // Falta el precio de entrada (a mano) o el precio de la etapa actual: avisar.
+    return {
+      ...baseP, sinPrecios: true, hayVenta: false, precioActual: 0, precioVenta: 0,
+      rendimientoPct: 0, ganancia: 0, totalARecibir: recibido,
+      rendPctFinal: 0, gananciaFinal: 0, totalFinal: monto,
+    };
+  }
+
+  const corte = fechaCorteRendimiento(inv);
+  const finProy = inv.fechaSalida && String(inv.fechaSalida).trim() ? String(inv.fechaSalida).trim() : corte;
+  const tramos = parseTramos(inv.tramos);
+
+  // ----- MODO TRAMOS: retorno fijo segun el mes de venta (no anualizado) -----
+  if (tramos.length) {
+    const mesHoy = mesParaTramo(inv.fechaInicio, corte);     // mes en curso hoy (0 si falta fecha)
+    const mesFin = mesParaTramo(inv.fechaInicio, finProy);   // mes de venta esperado
+    const pctHoy = pctTramo(tramos, mesHoy);
+    const pctFin = pctTramo(tramos, mesFin);
+    const ganancia = recibido * (pctHoy / 100);        // si se vende hoy: sobre lo aportado
+    const totalARecibir = recibido + ganancia;
+    const gananciaFinal = monto * (pctFin / 100);      // proyeccion: sobre el comprometido
+    const totalFinal = monto + gananciaFinal;
+    return {
+      modo: "tramos", monto, recibido, tramos,
+      mesHoy, mesFin, dias: diasEntre(inv.fechaInicio, corte),
+      rendimientoPct: pctHoy, ganancia, totalARecibir,
+      rendPctFinal: pctFin, gananciaFinal, totalFinal,
+    };
+  }
+
+  // ----- MODO ANUAL: tasa anual sobre lo aportado, desde el inicio -----
+  const tasa = (inv.tasaAnual === "" || inv.tasaAnual == null) ? TASA_DEFAULT : Number(inv.tasaAnual);
+  const dias = diasEntre(inv.fechaInicio, corte);
+  const rendimientoPct = dias * (tasa / 365);
+  const ganancia = recibido * (rendimientoPct / 100);
+  const totalARecibir = recibido + ganancia;
+  const diasTotal = diasEntre(inv.fechaInicio, finProy);
+  const rendPctFinal = diasTotal * (tasa / 365);
+  const gananciaFinal = monto * (rendPctFinal / 100);
+  const totalFinal = monto + gananciaFinal;
+  return { modo: "anual", tasa, monto, recibido, dias, rendimientoPct, ganancia, totalARecibir, diasTotal, rendPctFinal, gananciaFinal, totalFinal };
+}
+
 // Estado derivado de una aportacion (la fuente de verdad es fechaRecibida;
 // la columna 'estado' del Sheet no se usa para derivar, por eso no se persiste)
 function estadoAportacion(ap) {
@@ -162,7 +353,12 @@ function sanitizarParaCache(data) {
     const { claveAcceso, notas, ...resto } = i || {};
     return resto;
   });
-  return { ...d, Inversionistas: inversionistas };
+  // Tampoco persistimos la claveAcceso de los asesores en el cache local.
+  const asesores = arr(d.Asesores).map((a) => {
+    const { claveAcceso, ...resto } = a || {};
+    return resto;
+  });
+  return { ...d, Inversionistas: inversionistas, Asesores: asesores };
 }
 
 // ===================================================================
@@ -199,7 +395,7 @@ const DEMO_DATA = {
 // Detecta si un error del backend es por credenciales de admin invalidas,
 // para poder forzar un re-login en vez de dejar la sesion atorada.
 function esErrorCredenciales(msg) {
-  return /credencial/i.test(String(msg || ""));
+  return /credencial|clave invalida/i.test(String(msg || ""));
 }
 
 async function apiCall(action, payload = {}) {
@@ -319,7 +515,7 @@ function Field({ label, children, hint }) {
 }
 
 const inputCls =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-400 bg-white";
+  "w-full rounded-lg border border-slate-300 px-3 py-2.5 sm:py-2 text-base sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-400 bg-white";
 
 function Input(props) { return <input {...props} className={inputCls + " " + (props.className || "")} />; }
 function Select(props) { return <select {...props} className={inputCls + " " + (props.className || "")} />; }
@@ -378,7 +574,7 @@ function FileUpload({ auth, onSubido, accept = "image/*,application/pdf", nota }
 }
 
 function Btn({ children, variant = "primary", className = "", ...rest }) {
-  const base = "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-3.5 py-2 transition disabled:opacity-50 disabled:cursor-not-allowed";
+  const base = "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-3.5 py-2.5 sm:py-2 min-h-[44px] sm:min-h-0 transition disabled:opacity-50 disabled:cursor-not-allowed";
   const variants = {
     primary: "bg-slate-900 text-white hover:bg-slate-800",
     ghost: "bg-transparent text-slate-600 hover:bg-slate-100",
@@ -429,7 +625,7 @@ function Modal({ open, onClose, title, children, width = "max-w-2xl" }) {
       <div className={`bg-white rounded-2xl shadow-xl w-full ${width} my-auto`}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 sticky top-0 bg-white rounded-t-2xl">
           <h3 className="font-semibold text-slate-800">{title}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 rounded-lg hover:bg-slate-100">
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-2.5 -mr-1.5 rounded-lg hover:bg-slate-100">
             <X size={20} />
           </button>
         </div>
@@ -460,7 +656,7 @@ function ConfirmDialog({ open, title, message, onConfirm, onCancel, confirmLabel
 // ===================================================================
 // LOGIN GATE
 // ===================================================================
-function LoginGate({ onAdmin, onInvestor }) {
+function LoginGate({ onAdmin, onInvestor, onAsesor }) {
   const [modo, setModo] = useState(null); // null | "admin" | "investor" | "recuperar"
   const [pass, setPass] = useState("");
   const [clave, setClave] = useState("");
@@ -505,6 +701,17 @@ function LoginGate({ onAdmin, onInvestor }) {
     } finally { setCargando(false); }
   };
 
+  const entrarAsesor = async (e) => {
+    e.preventDefault();
+    setError(""); setCargando(true);
+    try {
+      await apiCall("asesorLogin", { clave });
+      onAsesor(clave);
+    } catch (err) {
+      setError(err.message || "Clave invalida");
+    } finally { setCargando(false); }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{ background: "#0a0a0c" }}>
       <div className="w-full max-w-md">
@@ -544,20 +751,28 @@ function LoginGate({ onAdmin, onInvestor }) {
               </button>
 
               {/* Acceso del equipo: discreto, sin jerarquia */}
-              <div className="mt-5 pt-4 border-t border-slate-100 text-center">
+              <div className="mt-5 pt-4 border-t border-slate-100 text-center space-y-2">
                 <button
                   onClick={() => { setModo("admin"); setError(""); }}
-                  className="text-xs text-slate-400 hover:text-slate-700 transition inline-flex items-center gap-1.5"
+                  className="text-xs text-slate-400 hover:text-slate-700 transition inline-flex items-center gap-1.5 px-3 py-2.5"
                 >
                   <ShieldCheck size={13} /> ¿Eres del equipo? Acceso administrador
                 </button>
+                <div>
+                  <button
+                    onClick={() => { setModo("asesor"); setError(""); setClave(""); }}
+                    className="text-xs text-slate-400 hover:text-slate-700 transition inline-flex items-center gap-1.5 px-3 py-2.5"
+                  >
+                    <HardHat size={13} /> ¿Eres asesor? Acceso asesor
+                  </button>
+                </div>
               </div>
             </div>
           )}
 
           {modo === "admin" && (
             <form onSubmit={entrarAdmin} className="space-y-4">
-              <button type="button" onClick={() => { setModo(null); setError(""); }} className="text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1">
+              <button type="button" onClick={() => { setModo(null); setError(""); }} className="text-xs text-slate-500 hover:text-slate-800 inline-flex items-center gap-1 -ml-2 px-2 py-2">
                 <ArrowLeft size={14} /> Volver
               </button>
               <h2 className="font-semibold text-slate-800 flex items-center gap-2"><ShieldCheck size={18} /> Acceso administrador</h2>
@@ -585,30 +800,65 @@ function LoginGate({ onAdmin, onInvestor }) {
 
           {modo === "investor" && (
             <form onSubmit={entrarInversionista} className="space-y-4">
-              <button type="button" onClick={() => { setModo(null); setError(""); }} className="text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1">
+              <button type="button" onClick={() => { setModo(null); setError(""); }} className="text-xs text-slate-500 hover:text-slate-800 inline-flex items-center gap-1 -ml-2 px-2 py-2">
                 <ArrowLeft size={14} /> Volver
               </button>
               <h2 className="font-semibold text-slate-800 flex items-center gap-2"><Wallet size={18} className="text-amber-600" /> Acceso Codesarrollador</h2>
-              <Field label="Tu clave de acceso" hint="Te la proporciona el equipo de YoDesarrollo.">
-                <Input
-                  value={clave}
-                  onChange={(e) => setClave(e.target.value)}
-                  autoFocus
-                  placeholder="Tu clave personal"
-                />
+              <Field label="Tu contraseña" hint="Te la proporciona el equipo de YoDesarrollo (o la que tu pusiste en 'Mi cuenta').">
+                <div className="relative">
+                  <input
+                    type={verPass ? "text" : "password"}
+                    value={clave}
+                    onChange={(e) => setClave(e.target.value)}
+                    autoFocus
+                    className={inputCls + " pr-10"}
+                    placeholder="Tu contraseña"
+                  />
+                  <button type="button" onClick={() => setVerPass(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
+                    {verPass ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
               </Field>
               {error && <p className="text-sm text-red-600 flex items-center gap-1"><AlertCircle size={14} /> {error}</p>}
               {!BACKEND_LISTO && <p className="text-xs rounded-lg px-3 py-2" style={{ background: "rgba(201,169,110,0.12)", color: "#7a5e1e" }}>Vista previa: pulsa el boton para ver un ejemplo (datos de muestra).</p>}
               <Btn type="submit" variant="gold" disabled={cargando || (BACKEND_LISTO && !clave)} className="w-full">
                 {cargando ? <Spinner /> : <KeyRound size={16} />} Ver mi cartera
               </Btn>
-              <button type="button" onClick={() => { setModo("recuperar"); setError(""); setRecOk(false); setEmail(""); }} className="w-full text-center text-xs text-slate-400 hover:text-[#b8965a] transition">¿Olvidaste tu clave?</button>
+              <button type="button" onClick={() => { setModo("recuperar"); setError(""); setRecOk(false); setEmail(""); }} className="w-full text-center text-xs text-slate-400 hover:text-[#b8965a] transition">¿Olvidaste tu contraseña?</button>
+            </form>
+          )}
+
+          {modo === "asesor" && (
+            <form onSubmit={entrarAsesor} className="space-y-4">
+              <button type="button" onClick={() => { setModo(null); setError(""); }} className="text-xs text-slate-500 hover:text-slate-800 inline-flex items-center gap-1 -ml-2 px-2 py-2">
+                <ArrowLeft size={14} /> Volver
+              </button>
+              <h2 className="font-semibold text-slate-800 flex items-center gap-2"><HardHat size={18} className="text-amber-600" /> Acceso asesor</h2>
+              <Field label="Tu contraseña de asesor" hint="Te la proporciona el equipo de YoDesarrollo.">
+                <div className="relative">
+                  <input
+                    type={verPass ? "text" : "password"}
+                    value={clave}
+                    onChange={(e) => setClave(e.target.value)}
+                    autoFocus
+                    className={inputCls + " pr-10"}
+                    placeholder="Tu contraseña de asesor"
+                  />
+                  <button type="button" onClick={() => setVerPass(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
+                    {verPass ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </Field>
+              {error && <p className="text-sm text-red-600 flex items-center gap-1"><AlertCircle size={14} /> {error}</p>}
+              <Btn type="submit" variant="gold" disabled={cargando || !clave} className="w-full">
+                {cargando ? <Spinner /> : <KeyRound size={16} />} Entrar
+              </Btn>
             </form>
           )}
 
           {modo === "recuperar" && (
             <form onSubmit={recuperar} className="space-y-4">
-              <button type="button" onClick={() => { setModo("investor"); setError(""); setRecOk(false); }} className="text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1">
+              <button type="button" onClick={() => { setModo("investor"); setError(""); setRecOk(false); }} className="text-xs text-slate-500 hover:text-slate-800 inline-flex items-center gap-1 -ml-2 px-2 py-2">
                 <ArrowLeft size={14} /> Volver
               </button>
               <h2 className="font-semibold text-slate-800 flex items-center gap-2"><KeyRound size={18} className="text-amber-600" /> Recuperar mi acceso</h2>
@@ -652,14 +902,14 @@ function KpiCard({ icon: Icon, label, value, sub, tone = "slate", alert = false 
     red: "from-red-50 to-white border-red-200 text-red-700",
   };
   return (
-    <div className={`rounded-2xl border bg-gradient-to-br p-4 ${tones[tone]} ${alert ? "ring-2 ring-red-300" : ""}`}>
-      <div className="flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg bg-white/70 flex items-center justify-center">
+    <div className={`rounded-2xl border bg-gradient-to-br p-3 sm:p-4 min-w-0 ${tones[tone]} ${alert ? "ring-2 ring-red-300" : ""}`}>
+      <div className="flex items-start gap-2">
+        <div className="w-8 h-8 rounded-lg bg-white/70 flex items-center justify-center shrink-0">
           <Icon size={17} />
         </div>
-        <span className="text-xs font-medium text-slate-500">{label}</span>
+        <span className="text-xs font-medium text-slate-500 leading-tight">{label}</span>
       </div>
-      <div className="mt-2 text-xl sm:text-2xl font-semibold text-slate-900 tabular-nums">{value}</div>
+      <div className="mt-2 text-lg sm:text-2xl font-semibold text-slate-900 tabular-nums break-words leading-tight">{value}</div>
       {sub ? <div className="text-xs text-slate-500 mt-0.5">{sub}</div> : null}
     </div>
   );
@@ -818,7 +1068,7 @@ function InversionistaForm({ value, onChange }) {
         <Input type="email" value={value.email || ""} onChange={(e) => set("email", e.target.value)} placeholder="(opcional)" />
       </Field>
       <Field label="Clave de acceso del Codesarrollador" hint="Con esta clave el Codesarrollador entra a ver SU cartera. Solo tu (admin) la ves aqui.">
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <div className="relative flex-1">
             <input
               type={verClave ? "text" : "password"}
@@ -831,7 +1081,7 @@ function InversionistaForm({ value, onChange }) {
               {verClave ? <EyeOff size={18} /> : <Eye size={18} />}
             </button>
           </div>
-          <Btn type="button" variant="outline" onClick={generarClave}><KeyRound size={15} /> Generar</Btn>
+          <Btn type="button" variant="outline" className="w-full sm:w-auto" onClick={generarClave}><KeyRound size={15} /> Generar</Btn>
         </div>
       </Field>
       <Field label="Notas internas">
@@ -857,8 +1107,9 @@ const EJEMPLO_PROYECTO = {
   estado: "Abierto",
 };
 
-function ProyectoForm({ value, onChange }) {
+function ProyectoForm({ value, onChange, precios }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
+  const clavesP = Object.keys(precios || {});
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -914,12 +1165,49 @@ function ProyectoForm({ value, onChange }) {
       <Field label="Descripcion">
         <Textarea rows={2} value={value.descripcion || ""} onChange={(e) => set("descripcion", e.target.value)} />
       </Field>
+
+      {/* Plusvalia por etapa: marca el proyecto como terreno y fija la etapa de
+          precio ACTUAL (aplica a TODOS sus codesarrolladores). */}
+      <div className="rounded-xl border border-slate-200 p-3 space-y-3">
+        <div>
+          <div className="text-sm font-medium text-slate-700">Plusvalia por etapa (terreno)</div>
+          <div className="text-xs text-slate-400">Opcional. Si este proyecto sube de valor por etapa (Real Miramar, Dunas), elige su hoja de precios y la etapa ACTUAL. Aplica a TODOS sus codesarrolladores. Vacio = proyecto normal (tasa/tramos).</div>
+        </div>
+        {clavesP.length === 0 ? (
+          <p className="text-xs text-amber-600">No se pudieron leer precios de tu hoja (revisa que la cuenta del portal tenga acceso y que existan columnas pv_*).</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Field label="Hoja de precios">
+              <Select value={value.plusvaliaKey || ""} onChange={(e) => set("plusvaliaKey", e.target.value)}>
+                <option value="">— Ninguno (proyecto normal) —</option>
+                {clavesP.map((k) => <option key={k} value={k}>{precios[k].nombre || k}</option>)}
+              </Select>
+            </Field>
+            {value.plusvaliaKey ? (
+              <Field label="Etapa de precio ACTUAL" hint="Muevela aqui cuando avance el proyecto; cambia para todos.">
+                <Select value={value.etapaPrecio || ""} onChange={(e) => set("etapaPrecio", e.target.value)}>
+                  <option value="">— Elige —</option>
+                  {ETAPAS_PLUSVALIA.filter((e) => ((precios[value.plusvaliaKey] || {}).etapas || {})[e.key]).map((e) => <option key={e.key} value={e.key}>{e.label} · {money(precios[value.plusvaliaKey].etapas[e.key])}/m²</option>)}
+                </Select>
+              </Field>
+            ) : null}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function InversionForm({ value, onChange, inversionistas, proyectos, esNuevo = true }) {
+function InversionForm({ value, onChange, inversionistas, proyectos, precios, esNuevo = true }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
+  // Plusvalia: si el PROYECTO elegido la tiene activada, mostramos el campo de
+  // precio de entrada (a mano). La etapa actual la trae el proyecto.
+  const proyectoSel = arr(proyectos).find((p) => String(p.id) === String(value.proyectoId));
+  const esPlusvalia = !!(proyectoSel && proyectoSel.plusvaliaKey && String(proyectoSel.plusvaliaKey).trim());
+  const tablaSel = esPlusvalia && precios && precios[proyectoSel.plusvaliaKey] ? (precios[proyectoSel.plusvaliaKey].etapas || {}) : {};
+  const etapaActSel = esPlusvalia ? String(proyectoSel.etapaPrecio || "").trim() : "";
+  const etapaActLabel = etapaActSel ? etiquetaEtapaPlusvalia(etapaActSel) : "";
+  const precioActSel = etapaActSel ? (Number(tablaSel[etapaActSel]) || 0) : 0;
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -967,6 +1255,92 @@ function InversionForm({ value, onChange, inversionistas, proyectos, esNuevo = t
       <Field label="Notas">
         <Textarea rows={2} value={value.notas || ""} onChange={(e) => set("notas", e.target.value)} />
       </Field>
+      <TramosEditor value={value.tramos || ""} onChange={(v) => set("tramos", v)} />
+
+      {/* Plusvalia: si el PROYECTO elegido es de plusvalia, solo se captura el
+          precio de ENTRADA a mano (la etapa actual vive en el proyecto). */}
+      {esPlusvalia ? (
+        <div className="rounded-xl border border-slate-200 p-3 space-y-3">
+          <div>
+            <div className="text-sm font-medium text-slate-700">Plusvalia · {proyectoSel.nombre}</div>
+            <div className="text-xs text-slate-400">Este proyecto sube por etapa. Etapa ACTUAL: <b>{etapaActLabel || "(sin definir)"}</b>{precioActSel ? ` · ${money(precioActSel)}/m²` : ""} (se cambia en el proyecto, aplica a todos). Aqui solo pon el precio al que ENTRO este codesarrollador.</div>
+          </div>
+          <Field label="Precio de entrada ($/m²)" hint="Lo que pago por m² al entrar (ej. su etapa Fundador, aunque no este en la hoja). Si lo dejas vacio, su valor queda 'en configuracion'.">
+            <Input type="number" value={value.precioEntrada || ""} onChange={(e) => set("precioEntrada", e.target.value)} placeholder="Ej. 3900" />
+          </Field>
+          {(value.estado || "Activa") === "Liquidada" ? (
+            <Field label="Precio de salida ($/m²)" hint="Precio al que se liquido/vendio. Congela el valor para que no siga cambiando si el proyecto avanza de etapa.">
+              <Input type="number" value={value.precioSalida || ""} onChange={(e) => set("precioSalida", e.target.value)} placeholder="Ej. 6067" />
+            </Field>
+          ) : null}
+          {Object.keys(tablaSel).length ? (
+            <div className="text-[11px] text-slate-400">Referencia de precios de la hoja: {ETAPAS_PLUSVALIA.filter((e) => tablaSel[e.key]).map((e) => `${e.label} ${money(tablaSel[e.key])}`).join(" · ")} /m²</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Editor de tramos (brackets): retorno FIJO por mes de venta. Guarda un JSON
+// [{desde,hasta,pct}] en value.tramos. Si queda vacio, la inversion usa su tasa anual.
+function TramosEditor({ value, onChange }) {
+  let tramos = [];
+  try { const t = JSON.parse(value || "[]"); if (Array.isArray(t)) tramos = t; } catch (e) { tramos = []; }
+  const guardar = (arrT) => onChange(arrT.length ? JSON.stringify(arrT) : "");
+  const setRow = (i, k, v) => guardar(tramos.map((t, idx) => idx === i ? { ...t, [k]: v } : t));
+  const agregar = () => {
+    const ultimo = tramos[tramos.length - 1];
+    const desde = ultimo ? (Number(ultimo.hasta) || 0) + 1 : 1;
+    guardar([...tramos, { desde, hasta: desde + 1, pct: "" }]);
+  };
+  const quitar = (i) => guardar(tramos.filter((_, idx) => idx !== i));
+  // Avisos suaves: huecos, traslapes, orden o filas incompletas (no bloquean, solo advierten).
+  const avisos = [];
+  const completos = tramos.filter((t) => String(t.desde).trim() !== "" && String(t.hasta).trim() !== "" && String(t.pct).trim() !== "");
+  if (tramos.length && completos.length < tramos.length) avisos.push("Hay tramos sin completar (desde/hasta/%); esos no cuentan.");
+  const ord = completos.map((t) => ({ d: Number(t.desde), h: Number(t.hasta) })).sort((a, b) => a.d - b.d);
+  for (let i = 0; i < ord.length; i++) {
+    if (ord[i].h < ord[i].d) avisos.push(`Un tramo tiene 'hasta' (${ord[i].h}) menor que 'desde' (${ord[i].d}).`);
+    if (i === 0 && ord[0].d > 1) avisos.push(`Empieza en el mes ${ord[0].d}: el mes 1 a ${ord[0].d - 1} no rinde.`);
+    if (i > 0) {
+      if (ord[i].d > ord[i - 1].h + 1) avisos.push(`Hueco entre el mes ${ord[i - 1].h} y el ${ord[i].d}.`);
+      if (ord[i].d <= ord[i - 1].h) avisos.push(`Traslape en el mes ${ord[i].d} (gana el tramo de arriba).`);
+    }
+  }
+  return (
+    <div className="rounded-xl border border-slate-200 p-3 space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium text-slate-700">Rendimiento por tramos (brackets)</div>
+          <div className="text-xs text-slate-400">Opcional. Retorno FIJO segun el mes de venta. Si lo dejas vacio, se usa la tasa anual de arriba.</div>
+        </div>
+        <Btn type="button" variant="outline" className="shrink-0" onClick={agregar}><Plus size={15} /> Tramo</Btn>
+      </div>
+      {tramos.length === 0 ? (
+        <p className="text-xs text-slate-400">Sin tramos. (Esta inversion usa la tasa anual.)</p>
+      ) : (
+        <div className="space-y-2">
+          <div className="hidden sm:grid grid-cols-[1fr_1fr_1fr_auto] gap-2 text-[11px] text-slate-400 px-1">
+            <span>Desde (mes)</span><span>Hasta (mes)</span><span>% retorno</span><span></span>
+          </div>
+          {tramos.map((t, i) => (
+            <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 items-center">
+              <Input type="number" min={1} value={t.desde ?? ""} onChange={(e) => setRow(i, "desde", e.target.value)} placeholder="Desde" />
+              <Input type="number" min={1} value={t.hasta ?? ""} onChange={(e) => setRow(i, "hasta", e.target.value)} placeholder="Hasta" />
+              <Input type="number" step="0.01" value={t.pct ?? ""} onChange={(e) => setRow(i, "pct", e.target.value)} placeholder="%" />
+              <IconBtn onClick={() => quitar(i)} icon={Trash2} title="Quitar" danger />
+            </div>
+          ))}
+          <div className="text-[11px] text-slate-400">Ej.: mes 1 a 6 = 12.5% · mes 7 a 8 = 16.67%. Es % fijo del capital (no anual). Usa rangos seguidos (sin huecos).</div>
+        </div>
+      )}
+      {avisos.length > 0 ? (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2 text-[11px] text-amber-800">
+          <div className="font-medium flex items-center gap-1"><AlertTriangle size={12} /> Revisa la tabla:</div>
+          <ul className="list-disc ml-4 mt-0.5">{avisos.slice(0, 5).map((a, i) => <li key={i}>{a}</li>)}</ul>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -999,7 +1373,7 @@ function DocumentoForm({ value, onChange }) {
   );
 }
 
-function AvanceForm({ value, onChange, pass }) {
+function AvanceForm({ value, onChange, auth }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
   const esDoc = value.tipo === "documento";
   const esVideo = value.tipo === "video";
@@ -1025,7 +1399,7 @@ function AvanceForm({ value, onChange, pass }) {
         <Input value={value.titulo || ""} onChange={(e) => set("titulo", e.target.value)} placeholder="Que se ve / que documento es" />
       </Field>
       <Field label={esVideo ? "Enlace del video" : esDoc ? "Documento" : "Foto"} hint={esVideo ? "Pega el enlace de YouTube." : "Sube el archivo (arrastra o busca) o pega un enlace."}>
-        {!esVideo ? <FileUpload auth={{ pass }} onSubido={(url) => set("url", url)} accept={esDoc ? "image/*,application/pdf" : "image/*"} nota={esDoc ? "Foto o PDF, se guarda en tu Drive." : "Foto, se guarda en tu Drive."} /> : null}
+        {!esVideo ? <FileUpload auth={auth} onSubido={(url) => set("url", url)} accept={esDoc ? "image/*,application/pdf" : "image/*"} nota={esDoc ? "Foto o PDF, se guarda en tu Drive." : "Foto, se guarda en tu Drive."} /> : null}
         <Input value={value.url || ""} onChange={(e) => set("url", e.target.value)} placeholder="https://... (se llena solo al subir)" className="mt-2" />
       </Field>
       <Field label="Descripcion (opcional)">
@@ -1064,11 +1438,75 @@ function BitacoraForm({ value, onChange }) {
   );
 }
 
+// ----- Formulario de Asesor (admin: alta/edicion + asignacion de proyectos) -----
+function AsesorForm({ value, onChange, proyectos }) {
+  const set = (k, v) => onChange({ ...value, [k]: v });
+  const seleccion = String(value.proyectoIds || "").split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
+  const toggle = (id) => {
+    const ya = seleccion.includes(id);
+    const nueva = ya ? seleccion.filter(x => x !== id) : [...seleccion, id];
+    set("proyectoIds", nueva.join(", "));
+  };
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Nombre del asesor"><Input value={value.nombre || ""} onChange={(e) => set("nombre", e.target.value)} placeholder="Ej. Miriam Duarte" /></Field>
+        <Field label="Correo (opcional)"><Input type="email" value={value.email || ""} onChange={(e) => set("email", e.target.value)} placeholder="correo@ejemplo.com" /></Field>
+      </div>
+      <Field label="Clave de acceso del asesor" hint="Compartesela; con ella entra a su panel de avances.">
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Input value={value.claveAcceso || ""} onChange={(e) => set("claveAcceso", e.target.value)} placeholder="Genera o escribe una clave" />
+          <Btn type="button" variant="outline" className="w-full sm:w-auto" onClick={() => set("claveAcceso", generarClaveAcceso())}><RefreshCw size={15} /> Generar</Btn>
+        </div>
+      </Field>
+      <div>
+        <div className="text-sm font-medium text-slate-700 mb-1.5">Proyectos que puede gestionar</div>
+        {arr(proyectos).length === 0 ? (
+          <p className="text-xs text-slate-400">No hay proyectos todavia.</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto rounded-xl border border-slate-200 p-2">
+            {arr(proyectos).map((p) => (
+              <label key={p.id} className="flex items-center gap-2 text-sm text-slate-700 px-1.5 py-1 rounded-lg hover:bg-slate-50 cursor-pointer">
+                <input type="checkbox" checked={seleccion.includes(String(p.id))} onChange={() => toggle(String(p.id))} />
+                <span className="truncate">{p.nombre || p.id}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        <div className="text-xs text-slate-400 mt-1">El asesor solo vera y gestionara avances/bitacora de estos proyectos. Nunca datos financieros.</div>
+      </div>
+    </div>
+  );
+}
+
+// ----- Formulario de Referido (admin: dar seguimiento al estado) -----
+function ReferidoForm({ value, onChange }) {
+  const set = (k, v) => onChange({ ...value, [k]: v });
+  return (
+    <div className="space-y-4">
+      {value.referidorNombre ? <div className="text-xs text-slate-500 rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">Invitado por: <b className="text-slate-700">{value.referidorNombre}</b> · beneficio prometido: <b>+1%</b> sobre su aportacion al devolver capital (si participa).</div> : null}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Nombre del invitado"><Input value={value.nombreProspecto || ""} onChange={(e) => set("nombreProspecto", e.target.value)} /></Field>
+        <Field label="Contacto"><Input value={value.contacto || ""} onChange={(e) => set("contacto", e.target.value)} placeholder="WhatsApp o correo" /></Field>
+      </div>
+      <Field label="Estado del seguimiento">
+        <Select value={value.estado || "Pendiente"} onChange={(e) => set("estado", e.target.value)}>
+          <option>Pendiente</option>
+          <option>Contactado</option>
+          <option>Participo</option>
+          <option>Descartado</option>
+        </Select>
+      </Field>
+      <Field label="Nota interna"><Textarea rows={2} value={value.nota || ""} onChange={(e) => set("nota", e.target.value)} /></Field>
+    </div>
+  );
+}
+
 function AportacionForm({ value, onChange, pass }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
         <Field label="Pago #">
           <Input type="number" value={value.numeroPago || ""} onChange={(e) => set("numeroPago", e.target.value)} min={1} />
         </Field>
@@ -1087,7 +1525,18 @@ function AportacionForm({ value, onChange, pass }) {
       </Field>
       <div className="rounded-xl bg-slate-50 border border-slate-100 p-3 space-y-3">
         <div className="text-xs font-medium text-slate-500">Registro del pago (cuando lo recibas y lo verifiques)</div>
-        {value.fechaReporte ? <div className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-2 py-1.5">El cliente reporto este pago el {fmtFecha(value.fechaReporte)}{value.referencia ? ` · folio: ${value.referencia}` : ""}. Verifica contra tu cuenta y pon la fecha recibida.</div> : null}
+        {value.fechaReporte ? (
+          <div className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-2 py-1.5">
+            El cliente reporto este pago el {fmtFecha(value.fechaReporte)}{value.referencia ? ` · folio: ${value.referencia}` : ""}.
+            {value.montoReportado && Number(value.montoReportado) !== Number(value.monto)
+              ? <> Reporto <b>{money(value.montoReportado)}</b> (programado {money(value.monto)}).</>
+              : (value.montoReportado ? <> Reporto <b>{money(value.montoReportado)}</b>.</> : null)}
+            {" "}Verifica contra tu cuenta, ajusta el monto si hace falta y pon la fecha recibida.
+            {value.montoReportado && Number(value.montoReportado) !== Number(value.monto)
+              ? <button type="button" onClick={() => set("monto", value.montoReportado)} className="ml-1 underline font-medium">Usar {money(value.montoReportado)}</button>
+              : null}
+          </div>
+        ) : null}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Fecha recibida" hint="Ponla cuando confirmes el deposito (vacio = aun no llega).">
             <Input type="date" value={toDateInput(value.fechaRecibida)} onChange={(e) => set("fechaRecibida", e.target.value)} />
@@ -1125,7 +1574,7 @@ function WizardAlta({ proyectos, onCrear, onClose }) {
 
   const crear = async () => {
     setError("");
-    if (!d.nombre.trim() || !d.email.trim()) { setError("Pon al menos el nombre y el correo del Codesarrollador."); return; }
+    if (!d.nombre.trim()) { setError("Pon al menos el nombre del Codesarrollador."); return; }
     if (!d.folio.trim()) { setError("Escribe el folio (ej. CA-HM-2026-01)."); return; }
     if (usarNuevoProy && !nuevoProy.nombre.trim()) { setError("Ponle nombre al proyecto nuevo."); return; }
     if (!usarNuevoProy && !d.proyectoId) { setError("Elige un proyecto (o crea uno nuevo)."); return; }
@@ -1150,7 +1599,7 @@ function WizardAlta({ proyectos, onCrear, onClose }) {
           <div className="rounded-xl border border-slate-200 p-4">
             <div className="text-xs text-slate-500 mb-1">Clave de acceso del Codesarrollador (compartesela):</div>
             <div className="text-xl font-mono font-bold tracking-wide text-slate-800 select-all">{resultado.clave}</div>
-            <div className="text-xs text-slate-400 mt-2">Tambien podra recuperarla solo, por correo, con "¿Olvidaste tu clave?".</div>
+            <div className="text-xs text-slate-400 mt-2">{d.email.trim() ? 'Tambien podra recuperarla solo, por correo, con "¿Olvidaste tu contraseña?".' : "Sin correo registrado: no podra recuperarla solo. Compartesela tu, o agrega su correo despues para que pueda recuperarla."}</div>
           </div>
           <div className="flex justify-end"><Btn onClick={onClose}>Cerrar</Btn></div>
         </div>
@@ -1158,7 +1607,7 @@ function WizardAlta({ proyectos, onCrear, onClose }) {
         <div className="space-y-4">
           <div className="grid md:grid-cols-3 gap-3">
             <Field label="Nombre"><Input value={d.nombre} onChange={e => set("nombre", e.target.value)} placeholder="Hugo Meave" /></Field>
-            <Field label="Correo (para su acceso)"><Input type="email" value={d.email} onChange={e => set("email", e.target.value)} placeholder="correo@ejemplo.com" /></Field>
+            <Field label="Correo (opcional)" hint="Para que pueda recuperar su contraseña solo. Si no tiene, dejalo vacio."><Input type="email" value={d.email} onChange={e => set("email", e.target.value)} placeholder="correo@ejemplo.com" /></Field>
             <Field label="Telefono (opcional)"><Input value={d.telefono} onChange={e => set("telefono", e.target.value)} /></Field>
           </div>
 
@@ -1207,9 +1656,9 @@ function AdminApp({ pass, onLogout }) {
   const [data, setData] = useState(() => {
     try {
       const c = localStorage.getItem(CACHE_KEY);
-      return c ? JSON.parse(c) : { Inversionistas: [], Proyectos: [], Inversiones: [], Aportaciones: [], Documentos: [], Avances: [], Bitacora: [] };
+      return c ? JSON.parse(c) : { Inversionistas: [], Proyectos: [], Inversiones: [], Aportaciones: [], Documentos: [], Avances: [], Bitacora: [], Asesores: [], Referidos: [] };
     } catch (e) {
-      return { Inversionistas: [], Proyectos: [], Inversiones: [], Aportaciones: [], Documentos: [], Avances: [], Bitacora: [] };
+      return { Inversionistas: [], Proyectos: [], Inversiones: [], Aportaciones: [], Documentos: [], Avances: [], Bitacora: [], Asesores: [], Referidos: [] };
     }
   });
   const [vista, setVista] = useState("dashboard"); // dashboard | inversionistas | proyectos | inversiones | calculadora
@@ -1255,6 +1704,9 @@ function AdminApp({ pass, onLogout }) {
         Documentos: arr(res.data?.Documentos),
         Avances: arr(res.data?.Avances),
         Bitacora: arr(res.data?.Bitacora),
+        Asesores: arr(res.data?.Asesores),
+        Referidos: arr(res.data?.Referidos),
+        preciosPlusvalia: res.data?.preciosPlusvalia || {},
       };
       setData(limpia);
       // No persistimos claveAcceso ni notas en el cache local (datos sensibles).
@@ -1314,6 +1766,12 @@ function AdminApp({ pass, onLogout }) {
 
   // ----- asistente: alta completa de un Codesarrollador -----
   const altaCodesarrollador = useCallback(async (d) => {
+    // 0) Proteger el folio: si ya existe una inversion con ese folio, NO crear
+    //    (un guardado lo sobre-escribiria). Mejor avisar y parar.
+    const folioNuevo = String(d.folio || "").trim();
+    if (folioNuevo && arr(data.Inversiones).some((i) => String(i.folio).trim() === folioNuevo)) {
+      throw new Error(`Ya existe una inversion con el folio "${folioNuevo}". Usa un folio distinto.`);
+    }
     // 1) Inversionista (con clave generada).
     const clave = generarClaveAcceso();
     const invId = await guardarFila("Inversionistas", { nombre: d.nombre.trim(), email: d.email.trim(), telefono: d.telefono || "", claveAcceso: clave, notas: "" });
@@ -1345,7 +1803,7 @@ function AdminApp({ pass, onLogout }) {
       await guardarFila("Aportaciones", { folio: d.folio.trim(), numeroPago: i + 1, totalPagos: n, concepto, fechaProgramada: sumarMeses(d.fechaInicio, i), monto: montos[i], fechaRecibida: "", comprobanteUrl: "", referencia: "", fechaReporte: "" });
     }
     return { clave, folio: d.folio.trim() };
-  }, [guardarFila]);
+  }, [guardarFila, data]);
 
   // ----- eliminar (delete) -----
   const eliminarFila = useCallback(async (tab, key) => {
@@ -1366,6 +1824,36 @@ function AdminApp({ pass, onLogout }) {
       setConfirm(null);
     }
   }, [pass, notificar, manejarError]);
+
+  // ----- Confirmar un pago reportado por el cliente -----
+  //  Marca la aportacion como recibida por el monto REAL reportado. Si fue
+  //  PARCIAL (entro menos que lo programado), crea automaticamente otra
+  //  aportacion por el saldo restante, para que el plan siga cuadrando.
+  const confirmarPagoReportado = useCallback(async (a, reportado) => {
+    const programado = num(a.monto);
+    const real = num(reportado);
+    try {
+      await guardarFila("Aportaciones", { ...a, monto: real, fechaRecibida: todayISO() });
+      const resto = Math.round((programado - real) * 100) / 100;
+      if (resto > 0.5) {
+        await guardarFila("Aportaciones", {
+          folio: a.folio,
+          numeroPago: a.numeroPago,
+          totalPagos: a.totalPagos,
+          concepto: `Resto de ${a.concepto || ("Aportacion " + a.numeroPago)}`,
+          fechaProgramada: a.fechaProgramada || todayISO(),
+          monto: resto,
+          fechaRecibida: "", comprobanteUrl: "", referencia: "", fechaReporte: "", montoReportado: "",
+        });
+        notificar(`Recibido ${money(real)}. Se creo una aportacion por el resto: ${money(resto)}.`, "ok");
+      } else if (real - programado > 0.5) {
+        // Sobrepago: entro mas de lo programado. Avisar para que el admin ajuste.
+        notificar(`Recibido ${money(real)} (${money(real - programado)} mas de lo programado). Revisa si aplicas el excedente a otra aportacion o ajustas el compromiso.`, "info");
+      } else {
+        notificar(`Pago confirmado: ${money(real)} recibido.`, "ok");
+      }
+    } catch (e) { /* el error ya se muestra */ }
+  }, [guardarFila, notificar]);
 
   // ----- KPIs -----
   const kpis = useMemo(() => {
@@ -1401,6 +1889,9 @@ function AdminApp({ pass, onLogout }) {
     { id: "inversionistas", label: "Codesarrolladores", icon: Users },
     { id: "proyectos", label: "Proyectos", icon: Building2 },
     { id: "inversiones", label: "Inversiones", icon: Wallet },
+    { id: "pagos", label: "Pagos", icon: CircleDollarSign },
+    { id: "asesores", label: "Asesores", icon: HardHat },
+    { id: "referidos", label: "Referidos", icon: Sparkles },
     { id: "calculadora", label: "Calculadora", icon: Calculator },
   ];
 
@@ -1408,12 +1899,14 @@ function AdminApp({ pass, onLogout }) {
   const nuevoRegistro = (tab, base = {}) => {
     const bases = {
       Inversionistas: { nombre: "", telefono: "", email: "", claveAcceso: "", notas: "" },
-      Proyectos: { nombre: "", banco: "", beneficiario: "", cuenta: "", clabe: "", conceptoBase: "", descripcion: "", estado: "Abierto" },
-      Inversiones: { folio: "", inversionistaId: "", proyectoId: "", montoTotal: "", fechaInicio: todayISO(), fechaSalida: "", tasaAnual: TASA_DEFAULT, estado: "Activa", notas: "" },
-      Aportaciones: { folio: "", numeroPago: "", totalPagos: "", concepto: "", fechaProgramada: "", monto: "", fechaRecibida: "", comprobanteUrl: "" },
+      Proyectos: { nombre: "", tipo: "Obra", etapaActual: "", banco: "", beneficiario: "", cuenta: "", clabe: "", conceptoBase: "", descripcion: "", estado: "Abierto", plusvaliaKey: "", etapaPrecio: "" },
+      Inversiones: { folio: "", inversionistaId: "", proyectoId: "", montoTotal: "", fechaInicio: todayISO(), fechaSalida: "", tasaAnual: TASA_DEFAULT, estado: "Activa", notas: "", tramos: "", precioEntrada: "", precioSalida: "" },
+      Aportaciones: { folio: "", numeroPago: "", totalPagos: "", concepto: "", fechaProgramada: "", monto: "", fechaRecibida: "", comprobanteUrl: "", referencia: "", fechaReporte: "", montoReportado: "" },
       Documentos: { folio: "", tipo: "Contrato", nombre: "", url: "", fecha: todayISO() },
       Avances: { proyectoId: "", tipo: "foto", etapa: "", url: "", titulo: "", descripcion: "", fecha: todayISO() },
       Bitacora: { proyectoId: "", fecha: todayISO(), autor: "", etiqueta: "Avance", titulo: "", nota: "" },
+      Asesores: { nombre: "", email: "", claveAcceso: generarClaveAcceso(), proyectoIds: "" },
+      Referidos: { referidorNombre: "", nombreProspecto: "", contacto: "", nota: "", estado: "Pendiente" },
     };
     setModal({ tab, row: { ...bases[tab], ...base }, esNuevo: true });
   };
@@ -1490,6 +1983,41 @@ function AdminApp({ pass, onLogout }) {
         {/* ---------- DASHBOARD ---------- */}
         {vista === "dashboard" && (
           <div className="space-y-6">
+            {/* Pagos reportados por el cliente, pendientes de validar */}
+            {(() => {
+              const porValidar = arr(data.Aportaciones).filter((a) => estadoAportacion(a) === "En aprobacion")
+                .sort((a, b) => String(b.fechaReporte || "").localeCompare(String(a.fechaReporte || "")));
+              if (porValidar.length === 0) return null;
+              return (
+                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
+                  <h3 className="font-semibold text-blue-800 flex items-center gap-2 mb-3"><Clock size={18} /> Pagos por validar <span className="text-sm font-normal text-blue-600">({porValidar.length})</span></h3>
+                  <div className="space-y-2">
+                    {porValidar.map((a) => {
+                      const invn = arr(data.Inversiones).find((i) => String(i.folio) === String(a.folio));
+                      const nombre = invn ? (inversionistaPorId(invn.inversionistaId)?.nombre || "—") : "—";
+                      const reportado = a.montoReportado && Number(a.montoReportado) > 0 ? num(a.montoReportado) : num(a.monto);
+                      const difiere = a.montoReportado && Number(a.montoReportado) !== Number(a.monto);
+                      return (
+                        <div key={a.id} className="bg-white rounded-xl border border-blue-100 p-3 flex flex-col sm:flex-row sm:items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-slate-800">{nombre} · <span className="font-mono text-xs text-slate-500">{a.folio}</span></div>
+                            <div className="text-xs text-slate-500">{a.concepto || `Aportacion ${a.numeroPago}`} · reportado {fmtFecha(a.fechaReporte)}{a.referencia ? ` · ref ${a.referencia}` : ""}</div>
+                            <div className="text-sm mt-0.5">Reporto <b className="tabular-nums">{money(reportado)}</b>{difiere ? <span className="text-amber-700"> (programado {money(a.monto)})</span> : null}</div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                            {a.comprobanteUrl ? <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 inline-flex items-center gap-1"><ExternalLink size={13} /> Comprobante</a> : null}
+                            <Btn variant="outline" onClick={() => setModal({ tab: "Aportaciones", row: { ...a }, esNuevo: false })}><Pencil size={14} /> Revisar</Btn>
+                            <Btn variant="success" onClick={() => confirmarPagoReportado(a, reportado)}><Check size={15} /> Confirmar recibido</Btn>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="text-[11px] text-blue-700/70 mt-2">"Confirmar recibido" marca el pago por el monto reportado. Si fue parcial (entro menos), se crea sola una aportacion por el resto.</div>
+                </div>
+              );
+            })()}
+
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
               <KpiCard icon={TrendingUp} label="Capital comprometido (activo)" value={money(kpis.totalComprometido)} tone="slate" />
               <KpiCard icon={CheckCircle2} label="Capital recibido" value={money(kpis.totalRecibido)} sub={`${kpis.recibidasCount} aportaciones`} tone="green" />
@@ -1588,7 +2116,12 @@ function AdminApp({ pass, onLogout }) {
             onNotificar={async (proyectoId) => {
               try {
                 const r = await apiCall("notificarAvance", { pass, proyectoId });
-                notificar(`Aviso enviado a ${r.enviados} codesarrollador(es).`, "ok");
+                const sin = Number(r.sinCorreo) || 0;
+                if (r.enviados === 0) {
+                  notificar(sin > 0 ? `Nadie recibio el aviso: ${sin} codesarrollador(es) sin correo registrado.` : "No habia a quien avisar.", "error");
+                } else {
+                  notificar(`Aviso enviado a ${r.enviados} codesarrollador(es).${sin > 0 ? ` (${sin} sin correo, no recibieron.)` : ""}`, sin > 0 ? "info" : "ok");
+                }
               } catch (e) {
                 notificar(manejarError(e), "error");
               }
@@ -1634,7 +2167,7 @@ function AdminApp({ pass, onLogout }) {
             onNuevaAportacion={(folio) => nuevoRegistro("Aportaciones", { folio })}
             onEditarAportacion={(row) => setModal({ tab: "Aportaciones", row: { ...row }, esNuevo: false })}
             onEliminarAportacion={(row) => setConfirm({ tab: "Aportaciones", key: row.id, msg: `Se eliminara el pago "${row.concepto || row.numeroPago}".` })}
-            onMarcarRecibida={(row) => guardarFila("Aportaciones", { ...row, fechaRecibida: todayISO() })}
+            onMarcarRecibida={(row) => confirmarPagoReportado(row, (row.montoReportado && Number(row.montoReportado) > 0) ? Number(row.montoReportado) : num(row.monto))}
             onGuardarComprobante={(row, url) => guardarFila("Aportaciones", { ...row, comprobanteUrl: url })}
             onGenerarPlan={(folio) => generarPlanPagos(folio)}
             onNuevoDocumento={(folio) => nuevoRegistro("Documentos", { folio })}
@@ -1643,11 +2176,42 @@ function AdminApp({ pass, onLogout }) {
           />
         )}
 
+        {/* ---------- ASESORES ---------- */}
+        {vista === "asesores" && (
+          <ListaAsesores
+            data={data}
+            proyectoPorId={proyectoPorId}
+            onNuevo={() => nuevoRegistro("Asesores")}
+            onEditar={(row) => setModal({ tab: "Asesores", row: { ...row }, esNuevo: false })}
+            onEliminar={(row) => setConfirm({ tab: "Asesores", key: row.id, msg: `Se eliminara el asesor "${row.nombre || row.id}" y su acceso.` })}
+          />
+        )}
+
+        {/* ---------- REFERIDOS ---------- */}
+        {vista === "referidos" && (
+          <ListaReferidos
+            data={data}
+            onEditar={(row) => setModal({ tab: "Referidos", row: { ...row }, esNuevo: false })}
+            onEliminar={(row) => setConfirm({ tab: "Referidos", key: row.id, msg: `Se eliminara el referido "${row.nombreProspecto || row.id}".` })}
+            onCambiarEstado={(row, estado) => guardarFila("Referidos", { ...row, estado })}
+          />
+        )}
+
+        {/* ---------- PAGOS (global) ---------- */}
+        {vista === "pagos" && (
+          <ListaPagos
+            data={data}
+            inversionistaPorId={inversionistaPorId}
+            onAbrir={(folio) => { setVista("inversiones"); setInversionAbierta(folio); }}
+            onEditar={(row) => setModal({ tab: "Aportaciones", row: { ...row }, esNuevo: false })}
+          />
+        )}
+
         {/* ---------- CALCULADORA ---------- */}
         {vista === "calculadora" && (
           <div className="bg-white rounded-2xl border border-slate-200 p-5">
             <h2 className="font-semibold text-slate-800 flex items-center gap-2 mb-1"><Calculator size={18} /> Calculadora de rendimiento</h2>
-            <p className="text-sm text-slate-500 mb-4">Rendimiento preferente del 25% anual, prorrateado por dia. Solo simula, no guarda nada.</p>
+            <p className="text-sm text-slate-500 mb-4">Simulador de rendimiento anual con la tasa que elijas, prorrateado por dia. Solo simula (no aplica a tramos ni plusvalia) y no guarda nada.</p>
             <Calculadora />
           </div>
         )}
@@ -1722,16 +2286,25 @@ function FormularioModal({ tab, rowInicial, data, pass, onCancelar, onGuardar, e
   const [row, setRow] = useState(rowInicial);
   const [enviando, setEnviando] = useState(false);
 
+  // Al CREAR una inversion, el folio no debe existir ya (un guardado lo pisaria).
+  const folioDuplicado = useMemo(() => {
+    if (tab !== "Inversiones" || !esNuevo) return false;
+    const f = String(row.folio || "").trim();
+    return !!f && arr(data.Inversiones).some((i) => String(i.folio).trim() === f);
+  }, [tab, esNuevo, row.folio, data]);
+
   const valido = useMemo(() => {
-    if (tab === "Inversiones") return !!(row.folio && String(row.folio).trim());
+    if (tab === "Inversiones") return !!(row.folio && String(row.folio).trim()) && !folioDuplicado;
     if (tab === "Inversionistas") return !!(row.nombre && String(row.nombre).trim());
     if (tab === "Proyectos") return !!(row.nombre && String(row.nombre).trim());
     if (tab === "Aportaciones") return !!(row.folio && row.monto);
     if (tab === "Documentos") return !!(row.folio && (row.nombre || row.url));
     if (tab === "Avances") return !!(row.proyectoId && row.url && (row.titulo || row.tipo));
     if (tab === "Bitacora") return !!(row.proyectoId && row.nota);
+    if (tab === "Asesores") return !!(row.nombre && String(row.nombre).trim() && row.claveAcceso && String(row.claveAcceso).trim());
+    if (tab === "Referidos") return !!(row.nombreProspecto && String(row.nombreProspecto).trim());
     return true;
-  }, [tab, row]);
+  }, [tab, row, folioDuplicado]);
 
   const submit = async () => {
     setEnviando(true);
@@ -1742,13 +2315,16 @@ function FormularioModal({ tab, rowInicial, data, pass, onCancelar, onGuardar, e
   return (
     <div>
       {tab === "Inversionistas" && <InversionistaForm value={row} onChange={setRow} />}
-      {tab === "Proyectos" && <ProyectoForm value={row} onChange={setRow} />}
-      {tab === "Inversiones" && <InversionForm value={row} onChange={setRow} inversionistas={data.Inversionistas} proyectos={data.Proyectos} esNuevo={esNuevo} />}
+      {tab === "Proyectos" && <ProyectoForm value={row} onChange={setRow} precios={data.preciosPlusvalia} />}
+      {tab === "Inversiones" && <InversionForm value={row} onChange={setRow} inversionistas={data.Inversionistas} proyectos={data.Proyectos} precios={data.preciosPlusvalia} esNuevo={esNuevo} />}
       {tab === "Aportaciones" && <AportacionForm value={row} onChange={setRow} pass={pass} />}
       {tab === "Documentos" && <DocumentoForm value={row} onChange={setRow} />}
-      {tab === "Avances" && <AvanceForm value={row} onChange={setRow} pass={pass} />}
+      {tab === "Avances" && <AvanceForm value={row} onChange={setRow} auth={{ pass }} />}
       {tab === "Bitacora" && <BitacoraForm value={row} onChange={setRow} />}
+      {tab === "Asesores" && <AsesorForm value={row} onChange={setRow} proyectos={data.Proyectos} />}
+      {tab === "Referidos" && <ReferidoForm value={row} onChange={setRow} />}
 
+      {folioDuplicado ? <p className="mt-4 text-sm text-red-600 flex items-center gap-1"><AlertCircle size={14} /> Ya existe una inversion con ese folio. Usa uno distinto para no sobre-escribirla.</p> : null}
       <div className="flex justify-end gap-2 mt-6 pt-4 border-t border-slate-100">
         <Btn variant="outline" onClick={onCancelar}>Cancelar</Btn>
         <Btn onClick={submit} disabled={!valido || enviando}>
@@ -1864,12 +2440,12 @@ function ListaProyectos({ data, onNuevo, onAbrir, onEditar, onEliminar }) {
 
 function DatoBanco({ label, valor, copiable, mono }) {
   return (
-    <div className="flex items-center justify-between gap-2 py-0.5">
+    <div className="flex items-start justify-between gap-2 py-1">
       <span className="text-xs text-slate-400 shrink-0">{label}</span>
-      <span className={`text-xs text-slate-700 text-right truncate ${mono ? "font-mono" : ""}`}>
-        {valor || "—"}
-        {copiable && valor ? <span className="ml-1.5 inline-block align-middle"><CopyButton value={valor} label="" /></span> : null}
-      </span>
+      <div className="flex items-start gap-1.5 min-w-0">
+        <span className={`text-xs text-slate-700 text-right break-all leading-snug ${mono ? "font-mono" : ""}`}>{valor || "—"}</span>
+        {copiable && valor ? <span className="shrink-0"><CopyButton value={valor} label="" /></span> : null}
+      </div>
     </div>
   );
 }
@@ -1886,7 +2462,37 @@ function ListaInversiones({ data, inversionistaPorId, proyectoPorId, capitalReci
       {lista.length === 0 ? (
         <EmptyState icon={Wallet} texto="Aun no hay inversiones. Crea la primera (recuerda el folio, ej. CA-HM-2026-01)." />
       ) : (
-        <div className="overflow-x-auto bg-white rounded-2xl border border-slate-200">
+        <>
+        {/* Movil: tarjetas apiladas (sin scroll lateral) */}
+        <div className="sm:hidden space-y-2">
+          {lista.map((inv) => {
+            const recibido = capitalRecibido(inv.folio);
+            const monto = num(inv.montoTotal);
+            const progreso = monto > 0 ? Math.min(100, Math.round((recibido / monto) * 100)) : 0;
+            return (
+              <div key={inv.folio} className="bg-white rounded-2xl border border-slate-200 p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <button onClick={() => onAbrir(inv.folio)} className="font-mono font-medium text-slate-800 hover:text-[#b8965a] inline-flex items-center gap-1 min-h-[40px]">
+                    {inv.folio} <ChevronRight size={14} />
+                  </button>
+                  <EstadoInversionBadge estado={inv.estado || "Activa"} />
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">{inversionistaPorId(inv.inversionistaId)?.nombre || "—"} · {proyectoPorId(inv.proyectoId)?.nombre || "—"}</div>
+                <div className="flex items-end justify-between gap-2 mt-3">
+                  <div><div className="text-[11px] text-slate-400">Monto</div><div className="tabular-nums font-medium text-slate-800">{money(monto)}</div></div>
+                  <div className="text-right"><div className="text-[11px] text-slate-400">Recibido</div><div className="tabular-nums font-medium text-emerald-700">{money(recibido)}</div></div>
+                </div>
+                <div className="w-full mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: progreso + "%" }} /></div>
+                <div className="flex gap-1 justify-end mt-2">
+                  <IconBtn onClick={() => onEditar(inv)} icon={Pencil} title="Editar" />
+                  <IconBtn onClick={() => onEliminar(inv)} icon={Trash2} title="Eliminar" danger />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Escritorio: tabla */}
+        <div className="hidden sm:block overflow-x-auto bg-white rounded-2xl border border-slate-200">
           <table className="w-full text-sm min-w-[760px]">
             <thead className="bg-slate-50 text-slate-500 text-xs">
               <tr>
@@ -1933,6 +2539,7 @@ function ListaInversiones({ data, inversionistaPorId, proyectoPorId, capitalReci
             </tbody>
           </table>
         </div>
+        </>
       )}
     </div>
   );
@@ -1957,11 +2564,13 @@ function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEdi
 
   // ----- KPIs del proyecto (solo frontend, reutiliza estadoAportacion) -----
   const kpisProyecto = useMemo(() => {
-    const foliosProyecto = new Set(inversiones.map(i => String(i.folio)));
-    // Capital comprometido: suma de montoTotal de las inversiones ACTIVAS del proyecto.
+    // Base UNICA para los KPIs financieros: inversiones ACTIVAS del proyecto, para
+    // que "comprometido" y "recibido/por recibir/vencidas" cuenten lo mismo (antes
+    // recibido contaba aportaciones de TODAS las inversiones y comprometido solo las activas).
     const inversionesActivas = inversiones.filter(i => (i.estado || "Activa") === "Activa");
+    const foliosProyecto = new Set(inversionesActivas.map(i => String(i.folio)));
     const capitalComprometido = inversionesActivas.reduce((s, i) => s + num(i.montoTotal), 0);
-    // Aportaciones de este proyecto (por folio).
+    // Aportaciones de las inversiones activas de este proyecto (por folio).
     const aportacionesProyecto = arr(data.Aportaciones).filter(a => foliosProyecto.has(String(a.folio)));
     const recibidas = aportacionesProyecto.filter(a => estadoAportacion(a) === "Recibida");
     const capitalRecibido = recibidas.reduce((s, a) => s + num(a.monto), 0);
@@ -2078,7 +2687,7 @@ function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEdi
               const generandoEste = generandoLink === invId;
               return (
                 <li key={iv.folio} className="py-2">
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-medium text-slate-700 truncate">{inv?.nombre || "—"}</div>
                       <div className="text-xs text-slate-400 font-mono">{iv.folio} · {money(num(iv.montoTotal))}</div>
@@ -2213,19 +2822,18 @@ function DetalleInversion({
   const recibido = capitalRecibido(folio);
   const monto = num(inv.montoTotal);
 
-  // Rendimiento al dia de hoy (o a fechaSalida si esta liquidada)
-  const fechaFin = inv.fechaSalida && String(inv.fechaSalida).trim() ? inv.fechaSalida : todayISO();
-  const rend = calcularRendimiento(monto, inv.fechaInicio, fechaFin, inv.tasaAnual);
+  // Rendimiento REAL: valor hoy sobre lo APORTADO (desde el inicio) + proyeccion al final.
+  const rend = calcularRendimientoInversion(inv, recibido, data.preciosPlusvalia, proyecto);
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
         <Btn variant="outline" onClick={onVolver}><ArrowLeft size={16} /> Volver</Btn>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1 sm:flex-none">
           <div className="font-mono font-semibold text-slate-800">{inv.folio}</div>
           <div className="text-xs text-slate-400">{inversionista?.nombre || "—"} · {proyecto?.nombre || "—"}</div>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="w-full sm:w-auto sm:ml-auto flex flex-wrap items-center gap-2">
           <EstadoInversionBadge estado={inv.estado || "Activa"} />
           <Btn variant="outline" onClick={() => window.print()}><Printer size={15} /> Estado de cuenta</Btn>
           <Btn variant="outline" onClick={() => onEditarInversion(inv)}><Pencil size={15} /> Editar</Btn>
@@ -2233,11 +2841,18 @@ function DetalleInversion({
       </div>
 
       {/* Resumen */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KpiCard icon={TrendingUp} label="Monto total" value={money(monto)} tone="slate" />
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-slate-400">Modelo de rendimiento aplicado:</span>
+        <Badge tone={rend.modo === "plusvalia" ? "green" : rend.modo === "tramos" ? "blue" : "amber"}>
+          {rend.modo === "plusvalia" ? "Plusvalia por etapa" : rend.modo === "tramos" ? "Por tramos (brackets)" : "Tasa anual"}
+        </Badge>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <KpiCard icon={TrendingUp} label="Monto comprometido" value={money(monto)} tone="slate" />
         <KpiCard icon={CheckCircle2} label="Capital recibido" value={money(recibido)} sub={`Falta ${money(Math.max(0, monto - recibido))}`} tone="green" />
-        <KpiCard icon={Sparkles} label={`Rendimiento (${rend.dias} dias)`} value={pct(rend.rendimientoPct)} sub={inv.fechaSalida ? "a fecha de salida" : "estimado a hoy"} tone="gold" />
-        <KpiCard icon={CircleDollarSign} label="Total a recibir (estimado)" value={money(rend.totalARecibir)} sub={`Ganancia ${money(rend.ganancia)}`} tone="blue" />
+        <KpiCard icon={Sparkles} label={rend.modo === "plusvalia" ? `Plusvalia (${rend.etapaActualLabel})` : rend.modo === "tramos" ? `Retorno (mes ${rend.mesHoy})` : `Rendimiento (${rend.dias} dias)`} value={rend.modo === "plusvalia" && rend.sinPrecios ? "—" : pct(rend.rendimientoPct)} sub={rend.modo === "plusvalia" ? (rend.sinPrecios ? "falta precio de entrada/etapa" : `desde ${money(rend.precioEntrada)}/m²`) : ((inv.estado || "Activa") === "Liquidada" ? "a fecha de salida" : (rend.modo === "tramos" ? "si se vende hoy" : "transcurrido a hoy"))} tone="gold" />
+        <KpiCard icon={CircleDollarSign} label="Valor hoy" value={money(rend.totalARecibir)} sub={rend.modo === "plusvalia" && rend.sinPrecios ? "plusvalia en configuracion" : `sobre lo aportado · +${money(rend.ganancia)}`} tone="blue" />
+        <KpiCard icon={CalendarClock} label="Total al final (estimado)" value={rend.modo === "plusvalia" && rend.sinPrecios ? "—" : money(rend.totalFinal)} sub={rend.modo === "plusvalia" ? (rend.sinPrecios ? "pendiente de precios" : (rend.hayUpside ? `al vender (${rend.etapaProyLabel}) · ${pct(rend.rendPctFinal)}` : "ya en su valor estimado")) : rend.modo === "tramos" ? `al vender (mes ${rend.mesFin}) · ${pct(rend.rendPctFinal)}` : `si completa · +${money(rend.gananciaFinal)}`} tone="gold" />
       </div>
 
       {/* Cuenta de deposito del proyecto */}
@@ -2306,7 +2921,7 @@ function DetalleInversion({
                               if (nv !== undefined && nv !== (a.comprobanteUrl || "")) onGuardarComprobante(a, nv);
                             }}
                             placeholder="URL comprobante"
-                            className="w-36 rounded-md border border-slate-200 px-2 py-1 text-xs"
+                            className="w-28 sm:w-36 rounded-md border border-slate-200 px-2 py-1 text-xs"
                           />
                           {a.comprobanteUrl ? (
                             <a href={a.comprobanteUrl} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a]"><ExternalLink size={14} /></a>
@@ -2371,7 +2986,7 @@ function DetalleInversion({
       </div>
 
       {/* Estado de cuenta imprimible (solo visible al imprimir) */}
-      <EstadoCuenta inv={inv} inversionista={inversionista} proyecto={proyecto} aportaciones={aportaciones} />
+      <EstadoCuenta inv={inv} inversionista={inversionista} proyecto={proyecto} aportaciones={aportaciones} precios={data.preciosPlusvalia} />
     </div>
   );
 }
@@ -2381,7 +2996,7 @@ function IconBtn({ onClick, icon: Icon, title, danger }) {
     <button
       onClick={onClick}
       title={title}
-      className={`p-1.5 rounded-lg ${danger ? "text-slate-400 hover:text-red-600 hover:bg-red-50" : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"}`}
+      className={`p-1.5 rounded-lg min-w-[40px] min-h-[40px] inline-flex items-center justify-center ${danger ? "text-slate-400 hover:text-red-600 hover:bg-red-50" : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"}`}
     >
       <Icon size={16} />
     </button>
@@ -2398,7 +3013,7 @@ function IconBtn({ onClick, icon: Icon, title, danger }) {
 // IMPORTANTE: solo puede haber UN #estado-cuenta-print visible al imprimir.
 // En la vista del inversionista (que puede tener varias inversiones) se controla
 // con la prop "activo": solo el seleccionado lleva el id y la clase print:block.
-function EstadoCuenta({ inv, inversionista, proyecto, aportaciones, activo = true }) {
+function EstadoCuenta({ inv, inversionista, proyecto, aportaciones, activo = true, precios }) {
   if (!inv) return null;
   const aps = arr(aportaciones).slice().sort((a, b) => num(a.numeroPago) - num(b.numeroPago));
   const monto = num(inv.montoTotal);
@@ -2407,9 +3022,8 @@ function EstadoCuenta({ inv, inversionista, proyecto, aportaciones, activo = tru
   const comprometido = monto || programado;
   const porRecibir = Math.max(0, comprometido - recibido);
 
-  const fechaFin = inv.fechaSalida && String(inv.fechaSalida).trim() ? inv.fechaSalida : todayISO();
-  const liquidada = !!(inv.fechaSalida && String(inv.fechaSalida).trim());
-  const rend = calcularRendimiento(monto, inv.fechaInicio, fechaFin, inv.tasaAnual);
+  const liquidada = (inv.estado || "Activa") === "Liquidada";
+  const rend = calcularRendimientoInversion(inv, recibido, precios, proyecto);
 
   const labelEstado = (e) => {
     const t = e === "Recibida" ? "#0f7a3d" : e === "Vencida" ? "#b42318" : e === "En aprobacion" ? "#1d4ed8" : "#8a6d1e";
@@ -2501,12 +3115,27 @@ function EstadoCuenta({ inv, inversionista, proyecto, aportaciones, activo = tru
         {/* Rendimiento estimado */}
         <div style={{ fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#8a6d1e", marginBottom: "6px" }}>Rendimiento estimado</div>
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "16px" }}>
-          {[
+          {(rend.modo === "plusvalia" ? (rend.sinPrecios ? [
+            { l: "Plusvalia por etapa", v: "Datos de precio pendientes", c: "#8a6d1e" },
+            { l: liquidada ? "Total recibido (salida)" : "Valor hoy (capital aportado)", v: money(rend.totalARecibir) },
+          ] : [
+            { l: `Plusvalia (${rend.etapaActualLabel})`, v: pct(rend.rendimientoPct) },
+            { l: "Precio de entrada", v: `${money(rend.precioEntrada)}/m²` },
+            { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
+            { l: "Ganancia a hoy", v: money(rend.ganancia), c: "#8a6d1e" },
+            { l: rend.hayUpside ? `Total al vender (${rend.etapaProyLabel}, ${pct(rend.rendPctFinal)})` : "Valor estimado actual", v: money(rend.totalFinal) },
+          ]) : rend.modo === "tramos" ? [
+            { l: liquidada ? `Retorno al vender (mes ${rend.mesHoy})` : `Retorno si se vende hoy (mes ${rend.mesHoy})`, v: pct(rend.rendimientoPct) },
+            { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
+            { l: "Ganancia a hoy", v: money(rend.ganancia), c: "#8a6d1e" },
+            { l: `Total al vender (mes ${rend.mesFin}, ${pct(rend.rendPctFinal)})`, v: money(rend.totalFinal) },
+          ] : [
             { l: `Periodo (${rend.dias} dias)`, v: pct(rend.rendimientoPct) },
             { l: `Tasa anual`, v: pct(rend.tasa) },
-            { l: liquidada ? "Total recibido (salida)" : "Total a recibir (estimado a hoy)", v: money(rend.totalARecibir) },
-            { l: "Ganancia estimada", v: money(rend.ganancia), c: "#8a6d1e" },
-          ].map((t) => (
+            { l: liquidada ? "Total recibido (salida)" : "Valor hoy (sobre lo aportado)", v: money(rend.totalARecibir) },
+            { l: "Ganancia a hoy", v: money(rend.ganancia), c: "#8a6d1e" },
+            { l: "Total al final (si completa)", v: money(rend.totalFinal) },
+          ]).map((t) => (
             <div key={t.l} style={{ flex: "1 1 120px", border: "1px solid #ddd", borderRadius: "10px", padding: "10px 12px" }}>
               <div style={{ fontSize: "10px", color: "#888" }}>{t.l}</div>
               <div style={{ fontSize: "15px", fontWeight: 700, marginTop: "2px", color: t.c || "#1a1409" }}>{t.v}</div>
@@ -2529,7 +3158,7 @@ function EstadoCuenta({ inv, inversionista, proyecto, aportaciones, activo = tru
 
         {/* Pie */}
         <div style={{ borderTop: "1px solid #ddd", paddingTop: "10px", fontSize: "10px", color: "#999", textAlign: "center" }}>
-          Documento informativo. No es un comprobante fiscal. Los rendimientos son estimados y se prorratean por dia conforme a la tasa preferente vigente. · YODESARROLLO · Emitido el {fmtFecha(todayISO())}
+          Documento informativo. No es un comprobante fiscal. {rend.modo === "plusvalia" ? "Los valores son estimados y corresponden a la plusvalia por etapa de precio del terreno." : rend.modo === "tramos" ? "Los rendimientos son estimados y corresponden al retorno fijo segun el mes de venta de la propiedad." : "Los rendimientos son estimados y se prorratean por dia conforme a la tasa preferente vigente."} · YODESARROLLO · Emitido el {fmtFecha(todayISO())}
         </div>
       </div>
     </div>
@@ -2546,9 +3175,513 @@ function EmptyState({ icon: Icon, texto }) {
 }
 
 // ===================================================================
+// ADMIN: LISTA DE ASESORES
+// ===================================================================
+function ListaAsesores({ data, proyectoPorId, onNuevo, onEditar, onEliminar }) {
+  const [verClaves, setVerClaves] = useState({});
+  const lista = arr(data.Asesores);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2"><HardHat size={20} /> Asesores <span className="text-sm font-normal text-slate-400">({lista.length})</span></h2>
+        <Btn onClick={onNuevo}><Plus size={16} /> Nuevo asesor</Btn>
+      </div>
+      {lista.length === 0 ? (
+        <EmptyState icon={HardHat} texto="Aun no hay asesores. Crea uno y asignale proyectos; solo vera y gestionara avances/bitacora (nada financiero)." />
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
+          {lista.map((a) => {
+            const ids = String(a.proyectoIds || "").split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
+            const nombres = ids.map(id => proyectoPorId(id)?.nombre || id);
+            return (
+              <div key={a.id} className="p-4 flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-slate-800">{a.nombre || "(sin nombre)"}</div>
+                  {a.email ? <div className="text-xs text-slate-400">{a.email}</div> : null}
+                  <div className="mt-1 flex items-center gap-2 text-xs">
+                    <span className="text-slate-400">Clave:</span>
+                    <span className="font-mono text-slate-600">{verClaves[a.id] ? (a.claveAcceso || "—") : "•••••••"}</span>
+                    <button onClick={() => setVerClaves(v => ({ ...v, [a.id]: !v[a.id] }))} className="text-slate-400 hover:text-slate-700">{verClaves[a.id] ? <EyeOff size={13} /> : <Eye size={13} />}</button>
+                    {a.claveAcceso ? <CopyButton value={a.claveAcceso} label="" /> : null}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {nombres.length === 0 ? <span className="text-xs text-amber-600">Sin proyectos asignados</span> : nombres.map((n, i) => <span key={i} className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{n}</span>)}
+                  </div>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <IconBtn onClick={() => onEditar(a)} icon={Pencil} title="Editar" />
+                  <IconBtn onClick={() => onEliminar(a)} icon={Trash2} title="Eliminar" danger />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===================================================================
+// ADMIN: LISTA DE REFERIDOS
+// ===================================================================
+// Panel GLOBAL de pagos: todas las aportaciones, con filtro por estado, sin entrar inversion por inversion.
+function ListaPagos({ data, inversionistaPorId, onAbrir, onEditar }) {
+  const [filtro, setFiltro] = useState("Por validar");
+  const inversiones = arr(data.Inversiones);
+  const invPorFolio = (folio) => inversiones.find((i) => String(i.folio) === String(folio));
+  const todas = arr(data.Aportaciones).map((a) => ({ ...a, _estado: estadoAportacion(a) }));
+  const cont = {};
+  todas.forEach((a) => { cont[a._estado] = (cont[a._estado] || 0) + 1; });
+  const filtros = [
+    { key: "Por validar", label: "Por validar", match: (a) => a._estado === "En aprobacion", n: cont["En aprobacion"] || 0 },
+    { key: "Vencida", label: "Vencidas", match: (a) => a._estado === "Vencida", n: cont["Vencida"] || 0 },
+    { key: "Pendiente", label: "Pendientes", match: (a) => a._estado === "Pendiente", n: cont["Pendiente"] || 0 },
+    { key: "Recibida", label: "Recibidas", match: (a) => a._estado === "Recibida", n: cont["Recibida"] || 0 },
+    { key: "Todos", label: "Todos", match: () => true, n: todas.length },
+  ];
+  const activo = filtros.find((f) => f.key === filtro) || filtros[filtros.length - 1];
+  const lista = todas.filter(activo.match).sort((a, b) => String(a.fechaProgramada || "").localeCompare(String(b.fechaProgramada || "")));
+  const total = lista.reduce((s, a) => s + num(a.monto), 0);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2"><CircleDollarSign size={20} /> Pagos <span className="text-sm font-normal text-slate-400">({lista.length} · {money(total)})</span></h2>
+      </div>
+      <div className="flex gap-1.5 flex-wrap mb-3">
+        {filtros.map((f) => (
+          <button key={f.key} onClick={() => setFiltro(f.key)} className={`text-xs px-3 py-1.5 rounded-full border transition ${filtro === f.key ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}>
+            {f.label} <span className={filtro === f.key ? "text-white/70" : "text-slate-400"}>({f.n})</span>
+          </button>
+        ))}
+      </div>
+      {lista.length === 0 ? (
+        <EmptyState icon={CircleDollarSign} texto="No hay pagos en este filtro." />
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
+          {lista.map((a) => {
+            const iv = invPorFolio(a.folio);
+            const nombre = iv ? (inversionistaPorId(iv.inversionistaId)?.nombre || "—") : "—";
+            return (
+              <div key={a.id} className="p-3 flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-slate-800 truncate">{nombre} · <span className="font-mono text-xs text-slate-500">{a.folio}</span></div>
+                  <div className="text-xs text-slate-400">{a.concepto || `Aportacion ${a.numeroPago}`} · {fmtFecha(a.fechaProgramada)}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="tabular-nums font-medium text-slate-800">{money(a.monto)}</div>
+                  <EstadoAportacionBadge ap={a} />
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <IconBtn onClick={() => onEditar(a)} icon={Pencil} title="Editar / validar" />
+                  <IconBtn onClick={() => onAbrir(a.folio)} icon={ChevronRight} title="Abrir inversion" />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ListaReferidos({ data, onEditar, onEliminar, onCambiarEstado }) {
+  const lista = arr(data.Referidos).slice().sort((a, b) => String(b.creado || "").localeCompare(String(a.creado || "")));
+  const tono = (e) => e === "Participo" ? "green" : e === "Descartado" ? "gray" : e === "Contactado" ? "blue" : "amber";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2"><Sparkles size={20} /> Referidos <span className="text-sm font-normal text-slate-400">({lista.length})</span></h2>
+      </div>
+      <div className="mb-3 text-xs text-slate-600 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2">Cada invitado que participe le da a quien lo invito un <b>+1%</b> sobre su aportacion al devolver el capital. Aqui les das seguimiento; el +1% lo aplicas tu al liquidar.</div>
+      {lista.length === 0 ? (
+        <EmptyState icon={Sparkles} texto="Aun no hay referidos. Apareceran aqui cuando un codesarrollador invite a alguien desde su portal." />
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
+          {lista.map((r) => (
+            <div key={r.id} className="p-4 flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium text-slate-800">{r.nombreProspecto || "(sin nombre)"}</span>
+                  <Badge tone={tono(r.estado)}>{r.estado || "Pendiente"}</Badge>
+                </div>
+                <div className="text-xs text-slate-400 mt-0.5">Invitado por {r.referidorNombre || "—"}{r.creado ? ` · ${fmtFecha(r.creado)}` : ""}</div>
+                {r.contacto ? <div className="text-xs text-slate-500 mt-0.5">Contacto: {r.contacto}</div> : null}
+                {r.nota ? <div className="text-xs text-slate-500 mt-0.5">{r.nota}</div> : null}
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <Select value={r.estado || "Pendiente"} onChange={(e) => onCambiarEstado(r, e.target.value)} className="!w-auto text-xs py-1">
+                  <option>Pendiente</option><option>Contactado</option><option>Participo</option><option>Descartado</option>
+                </Select>
+                <IconBtn onClick={() => onEditar(r)} icon={Pencil} title="Editar" />
+                <IconBtn onClick={() => onEliminar(r)} icon={Trash2} title="Eliminar" danger />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===================================================================
+// VISTA ASESOR (acceso propio: solo avances/bitacora de SUS proyectos)
+// ===================================================================
+function AsesorApp({ clave, onLogout }) {
+  const [data, setData] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [modal, setModal] = useState(null);     // { tab, row, esNuevo }
+  const [confirm, setConfirm] = useState(null);  // { tab, key, msg }
+  const [guardando, setGuardando] = useState(false);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+
+  const notificar = useCallback((msg, tipo = "info") => {
+    setToast({ msg, tipo });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  const cargar = useCallback(async () => {
+    setCargando(true); setError("");
+    try {
+      const res = await apiCall("getMineAsesor", { clave });
+      setData(res.data);
+    } catch (err) {
+      setError(err.message || "No se pudo cargar tu panel.");
+      // Si la clave ya no es valida (se la cambiaron), cerrar sesion para no quedar atorado.
+      if (esErrorCredenciales(err.message)) { setError("Tu acceso cambio. Vuelve a entrar."); setTimeout(() => onLogout(), 1500); }
+    } finally { setCargando(false); }
+  }, [clave, onLogout]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const guardar = async (tab, row) => {
+    setGuardando(true);
+    try {
+      await apiCall("guardarComoAsesor", { clave, tab, row });
+      setModal(null);
+      notificar(row.id ? "Cambios guardados." : "Registro creado.", "ok");
+      cargar();
+    } catch (err) { notificar(err.message || "No se pudo guardar.", "error"); }
+    finally { setGuardando(false); }
+  };
+
+  const eliminar = async (tab, key) => {
+    setGuardando(true);
+    try {
+      await apiCall("eliminarComoAsesor", { clave, tab, key });
+      notificar("Eliminado.", "ok");
+      cargar();
+    } catch (err) { notificar(err.message || "No se pudo eliminar.", "error"); }
+    finally { setGuardando(false); setConfirm(null); }
+  };
+
+  const proyectos = arr(data?.proyectos);
+  const nuevoAvance = (proyectoId) => setModal({ tab: "Avances", esNuevo: true, row: { proyectoId, tipo: "foto", etapa: "", url: "", titulo: "", descripcion: "", fecha: todayISO() } });
+  const nuevaNota = (proyectoId) => setModal({ tab: "Bitacora", esNuevo: true, row: { proyectoId, fecha: todayISO(), autor: data?.asesor?.nombre || "", etiqueta: "Avance", titulo: "", nota: "" } });
+
+  return (
+    <div className="min-h-screen" style={{ background: "#f5f1ea" }}>
+      <Toast toast={toast} />
+      <header style={{ background: "#0a0a0c" }}>
+        <div className="max-w-3xl mx-auto px-4 py-3.5 flex items-center gap-3">
+          <img src={logoWhite} alt="YODESARROLLO.MX" className="h-6 w-auto" style={{ mixBlendMode: "screen" }} />
+          <div className="text-[10px] tracking-[0.25em] uppercase" style={{ color: "#c9a96e" }}>Panel del asesor</div>
+          <button onClick={onLogout} className="ml-auto inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg text-white/80 hover:text-white transition" style={{ background: "rgba(255,255,255,0.08)" }}>
+            <LogOut size={14} /> Salir
+          </button>
+        </div>
+      </header>
+
+      <main className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+        {cargando && <div className="flex items-center gap-2 text-slate-500 text-sm justify-center py-10"><Spinner /> Cargando tu panel...</div>}
+        {error && <div className="flex items-start gap-2 rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-red-700 text-sm"><AlertCircle size={18} className="shrink-0 mt-0.5" /> <span>{error}</span></div>}
+
+        {!cargando && !error && data && (
+          <>
+            <div className="mb-1">
+              <div className="text-2xl font-display text-slate-900">Hola, {(data.asesor?.nombre || "").split(" ")[0] || "Asesor"}</div>
+              <div className="text-sm text-slate-500">Gestiona los avances y la bitacora de tus proyectos. No tienes acceso a informacion financiera.</div>
+            </div>
+
+            {proyectos.length === 0 ? (
+              <EmptyState icon={HardHat} texto="No tienes proyectos asignados todavia. Pide al equipo que te asigne uno." />
+            ) : proyectos.map((p) => {
+              const avances = arr(data.avances).filter(a => String(a.proyectoId) === String(p.id)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+              const bitacora = arr(data.bitacora).filter(b => String(b.proyectoId) === String(p.id)).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+              return (
+                <div key={p.id} className="space-y-4">
+                  <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 className="text-lg font-semibold text-slate-800">{p.nombre || "(sin nombre)"}</h2>
+                      <Badge tone="slate">{p.tipo || "Obra"}</Badge>
+                      {p.etapaActual ? <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#7a5e1e" }}>Etapa: {p.etapaActual}</span> : null}
+                    </div>
+                    {p.descripcion ? <div className="text-sm text-slate-500 mt-1">{p.descripcion}</div> : null}
+                  </div>
+
+                  {/* Avances */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="font-semibold text-slate-800 flex items-center gap-2"><HardHat size={18} /> Avance <span className="text-xs font-normal text-slate-400">(lo ven los codesarrolladores)</span></h3>
+                      <Btn variant="outline" onClick={() => nuevoAvance(p.id)}><Plus size={15} /> Avance</Btn>
+                    </div>
+                    {avances.length === 0 ? (
+                      <p className="text-sm text-slate-400">Sin avances. Sube fotos, videos o documentos (por etapa).</p>
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                        {avances.map((av) => (
+                          <div key={av.id} className="rounded-xl border border-slate-200 overflow-hidden">
+                            <div className="relative aspect-[4/3] bg-slate-100">
+                              {av.tipo === "video" ? (<div className="w-full h-full flex items-center justify-center" style={{ background: "#1a1409" }}><PlayCircle size={30} style={{ color: "#d4be8a" }} /></div>)
+                                : av.tipo === "documento" ? (<div className="w-full h-full flex items-center justify-center" style={{ background: "#f5f1ea" }}><FileText size={30} style={{ color: "#c9a96e" }} /></div>)
+                                  : (<img src={driveImg(av.url)} alt={av.titulo || "Avance"} loading="lazy" className="w-full h-full object-cover" />)}
+                              {av.etapa ? <span className="absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white">{av.etapa}</span> : null}
+                            </div>
+                            <div className="p-2">
+                              <div className="text-xs font-medium text-slate-700 truncate">{av.titulo || "(sin titulo)"}</div>
+                              <div className="text-[10px] text-slate-400">{fmtFecha(av.fecha)}</div>
+                              <div className="flex justify-end gap-1 mt-1">
+                                {av.url ? <a href={av.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[#b8965a] p-1"><ExternalLink size={13} /></a> : null}
+                                <IconBtn onClick={() => setModal({ tab: "Avances", esNuevo: false, row: { ...av } })} icon={Pencil} title="Editar" />
+                                <IconBtn onClick={() => setConfirm({ tab: "Avances", key: av.id, msg: `Se eliminara el avance "${av.titulo || av.id}".` })} icon={Trash2} title="Eliminar" danger />
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bitacora */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="font-semibold text-slate-800 flex items-center gap-2"><MessageCircle size={18} /> Bitacora</h3>
+                      <Btn variant="outline" onClick={() => nuevaNota(p.id)}><Plus size={15} /> Nota</Btn>
+                    </div>
+                    {bitacora.length === 0 ? (
+                      <p className="text-sm text-slate-400">Sin notas. Agrega actualizaciones o respuestas para los codesarrolladores.</p>
+                    ) : (
+                      <ul className="divide-y divide-slate-100">
+                        {bitacora.map((b) => (
+                          <li key={b.id} className="py-2.5 flex items-start gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs text-slate-400">{fmtFecha(b.fecha)}</span>
+                                {b.etiqueta ? <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#7a5e1e" }}>{b.etiqueta}</span> : null}
+                                {b.autor ? <span className="text-[11px] text-slate-400">· {b.autor}</span> : null}
+                              </div>
+                              {b.titulo ? <div className="text-sm font-medium text-slate-700 mt-0.5">{b.titulo}</div> : null}
+                              <div className="text-sm text-slate-600">{b.nota}</div>
+                            </div>
+                            <div className="flex gap-1 shrink-0">
+                              <IconBtn onClick={() => setModal({ tab: "Bitacora", esNuevo: false, row: { ...b } })} icon={Pencil} title="Editar" />
+                              <IconBtn onClick={() => setConfirm({ tab: "Bitacora", key: b.id, msg: "Se eliminara esta nota." })} icon={Trash2} title="Eliminar" danger />
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </main>
+
+      {guardando && <div className="fixed bottom-5 right-5 z-[90] bg-slate-900 text-white px-3 py-2 rounded-lg text-xs flex items-center gap-2 shadow-lg"><Spinner size={14} /> Guardando...</div>}
+
+      <Modal open={!!modal} onClose={() => setModal(null)} title={modal ? `${modal.esNuevo ? "Nuevo" : "Editar"} · ${modal.tab === "Avances" ? "avance" : "nota"}` : ""}>
+        {modal && <AsesorFormBody modal={modal} clave={clave} guardando={guardando} onCancelar={() => setModal(null)} onGuardar={(row) => guardar(modal.tab, row)} />}
+      </Modal>
+
+      <ConfirmDialog open={!!confirm} title="Confirmar eliminacion" message={confirm?.msg} onCancel={() => setConfirm(null)} onConfirm={() => eliminar(confirm.tab, confirm.key)} />
+    </div>
+  );
+}
+
+function AsesorFormBody({ modal, clave, guardando, onCancelar, onGuardar }) {
+  const [row, setRow] = useState(modal.row);
+  const valido = modal.tab === "Avances"
+    ? !!(row.proyectoId && row.url && (row.titulo || row.tipo))
+    : !!(row.proyectoId && row.nota);
+  return (
+    <div>
+      {modal.tab === "Avances" ? <AvanceForm value={row} onChange={setRow} auth={{ clave }} /> : <BitacoraForm value={row} onChange={setRow} />}
+      <div className="flex justify-end gap-2 mt-6 pt-4 border-t border-slate-100">
+        <Btn variant="outline" onClick={onCancelar}>Cancelar</Btn>
+        <Btn onClick={() => onGuardar(row)} disabled={!valido || guardando}>{guardando ? <Spinner /> : <Save size={16} />} Guardar</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ===================================================================
+// CODESARROLLADOR: MODALES DE AUTOSERVICIO / DUDA / INVITAR
+// ===================================================================
+function MiCuentaModal({ clave, inv, onClose, onClaveCambiada, notificar }) {
+  const [email, setEmail] = useState(inv?.email || "");
+  const [telefono, setTelefono] = useState(inv?.telefono || "");
+  const [guardandoDatos, setGuardandoDatos] = useState(false);
+  const [nueva, setNueva] = useState("");
+  const [confirma, setConfirma] = useState("");
+  const [cambiando, setCambiando] = useState(false);
+  const [err, setErr] = useState("");
+
+  const guardarDatos = async () => {
+    if (!BACKEND_LISTO) { notificar("Vista previa: conecta el backend para guardar de verdad.", "info"); return; }
+    setErr(""); setGuardandoDatos(true);
+    try {
+      await apiCall("actualizarMisDatos", { clave, email, telefono });
+      notificar("Tus datos se guardaron.", "ok");
+    } catch (e) { setErr(e.message || "No se pudieron guardar tus datos."); }
+    finally { setGuardandoDatos(false); }
+  };
+
+  const cambiar = async () => {
+    if (!BACKEND_LISTO) { notificar("Vista previa: conecta el backend para cambiar la contrasena de verdad.", "info"); return; }
+    setErr("");
+    if (nueva.length < 6) { setErr("La nueva contrasena debe tener al menos 6 caracteres."); return; }
+    if (nueva !== confirma) { setErr("Las contrasenas no coinciden."); return; }
+    setCambiando(true);
+    try {
+      await apiCall("cambiarClave", { clave, nuevaClave: nueva });
+      notificar("Tu contrasena se cambio.", "ok");
+      setNueva(""); setConfirma("");
+      onClaveCambiada(nueva); // actualiza la sesion para que siga funcionando
+      onClose();
+    } catch (e) { setErr(e.message || "No se pudo cambiar la contrasena."); }
+    finally { setCambiando(false); }
+  };
+
+  return (
+    <Modal open onClose={onClose} title="Mi cuenta" width="max-w-lg">
+      <div className="space-y-5">
+        <div className="space-y-3">
+          <div className="text-sm font-semibold text-slate-700">Mis datos de contacto</div>
+          <Field label="Correo"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="correo@ejemplo.com" /></Field>
+          <Field label="Telefono"><Input value={telefono} onChange={(e) => setTelefono(e.target.value)} placeholder="10 digitos" /></Field>
+          <Btn onClick={guardarDatos} disabled={guardandoDatos}>{guardandoDatos ? <Spinner /> : <Save size={15} />} Guardar mis datos</Btn>
+        </div>
+        <div className="space-y-3 pt-4 border-t border-slate-100">
+          <div className="text-sm font-semibold text-slate-700">Cambiar mi contrasena</div>
+          <Field label="Nueva contrasena" hint="Minimo 6 caracteres."><Input type="password" value={nueva} onChange={(e) => setNueva(e.target.value)} /></Field>
+          <Field label="Confirmar contrasena"><Input type="password" value={confirma} onChange={(e) => setConfirma(e.target.value)} /></Field>
+          <Btn variant="gold" onClick={cambiar} disabled={cambiando || !nueva || !confirma}>{cambiando ? <Spinner /> : <KeyRound size={15} />} Cambiar contrasena</Btn>
+        </div>
+        {err && <p className="text-sm text-red-600 flex items-center gap-1"><AlertCircle size={14} /> {err}</p>}
+      </div>
+    </Modal>
+  );
+}
+
+function DudaModal({ clave, onClose, notificar }) {
+  const [mensaje, setMensaje] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [err, setErr] = useState("");
+  const enviar = async () => {
+    if (!BACKEND_LISTO) { notificar("Vista previa: conecta el backend para enviar de verdad.", "info"); onClose(); return; }
+    setErr("");
+    if (!mensaje.trim()) { setErr("Escribe tu mensaje."); return; }
+    setEnviando(true);
+    try {
+      await apiCall("enviarMensaje", { clave, mensaje });
+      notificar("Tu mensaje se envio. Te responderemos pronto.", "ok");
+      onClose();
+    } catch (e) { setErr(e.message || "No se pudo enviar."); }
+    finally { setEnviando(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title="Escribenos tu duda" width="max-w-lg">
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500">Cuentanos tu duda y te responderemos por correo. Escribe con confianza.</p>
+        <Field label="Tu mensaje"><Textarea rows={5} value={mensaje} onChange={(e) => setMensaje(e.target.value)} placeholder="Hola, tengo una duda sobre..." autoFocus /></Field>
+        {err && <p className="text-sm text-red-600 flex items-center gap-1"><AlertCircle size={14} /> {err}</p>}
+        <div className="flex justify-end gap-2"><button onClick={onClose} className="text-sm text-slate-500 px-3">Cancelar</button><Btn onClick={enviar} disabled={enviando || !mensaje.trim()}>{enviando ? <Spinner /> : <MessageCircle size={15} />} Enviar</Btn></div>
+      </div>
+    </Modal>
+  );
+}
+
+function InvitarModal({ clave, nombre, onClose, notificar }) {
+  const mensajeWA = `${nombre ? nombre + " te invita 👇\n\n" : ""}Estoy co-invirtiendo con YoDesarrollo (bienes raices con escritura) y me ha ido muy bien. Si entras con mi invitacion, ganamos los dos. Mira aqui: ${SITIO_URL}${nombre ? `\n\n(Diles que te invito ${nombre}.)` : ""}`;
+  const [nombreProspecto, setNombre] = useState("");
+  const [contacto, setContacto] = useState("");
+  const [nota, setNota] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [err, setErr] = useState("");
+  const enviar = async () => {
+    if (!BACKEND_LISTO) { notificar("Vista previa: conecta el backend para enviar de verdad.", "info"); onClose(); return; }
+    setErr("");
+    if (!nombreProspecto.trim()) { setErr("Pon el nombre de quien quieres invitar."); return; }
+    setEnviando(true);
+    try {
+      await apiCall("registrarReferido", { clave, nombreProspecto, contacto, nota });
+      notificar("¡Gracias! Recibimos tu invitacion y le daremos seguimiento.", "ok");
+      onClose();
+    } catch (e) { setErr(e.message || "No se pudo enviar la invitacion."); }
+    finally { setEnviando(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title="Invita y gana +1%" width="max-w-lg">
+      <div className="space-y-4">
+        <div className="rounded-xl p-4" style={{ background: "linear-gradient(135deg,#d4be8a 0%,#c9a96e 100%)" }}>
+          <div className="font-display text-lg" style={{ color: "#1a1409" }}>+1% para ti</div>
+          <div className="text-xs mt-0.5" style={{ color: "#5c4a24" }}>Si invitas a alguien y participa, recibes <b>+1% adicional</b> sobre tu aportacion al momento de la devolucion de tu capital.</div>
+        </div>
+        <Btn variant="success" className="w-full" onClick={() => compartirTexto(mensajeWA)}><MessageCircle size={16} /> Compartir mi invitacion por WhatsApp</Btn>
+        <div className="text-center text-[11px] text-slate-400">— o registra a tu invitado y nosotros lo contactamos —</div>
+        <Field label="Nombre de tu invitado"><Input value={nombreProspecto} onChange={(e) => setNombre(e.target.value)} placeholder="Nombre completo" autoFocus /></Field>
+        <Field label="Su WhatsApp o correo" hint="Para poderlo contactar."><Input value={contacto} onChange={(e) => setContacto(e.target.value)} placeholder="WhatsApp o correo" /></Field>
+        <Field label="Nota (opcional)"><Textarea rows={2} value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Algo que debamos saber" /></Field>
+        {err && <p className="text-sm text-red-600 flex items-center gap-1"><AlertCircle size={14} /> {err}</p>}
+        <div className="flex justify-end gap-2"><button onClick={onClose} className="text-sm text-slate-500 px-3">Cancelar</button><Btn variant="gold" onClick={enviar} disabled={enviando || !nombreProspecto.trim()}>{enviando ? <Spinner /> : <Sparkles size={15} />} Enviar invitacion</Btn></div>
+      </div>
+    </Modal>
+  );
+}
+
+// Explica al codesarrollador, en lenguaje simple, como se calcula SU valor segun el modelo.
+function ComoCalculaModal({ info, onClose }) {
+  const r = (info && info.rend) || {};
+  let cuerpo;
+  if (r.modo === "plusvalia") {
+    cuerpo = (
+      <>
+        <p>Tu inversion es en <b>terreno</b>: su valor sube por <b>etapas de precio</b> conforme avanza el proyecto.</p>
+        <p className="mt-2">Entraste a <b>{money(r.precioEntrada)}/m²</b> y hoy <b>{info.proyectoNombre}</b> va en la etapa <b>{r.etapaActualLabel}</b>{r.precioActual ? <> (<b>{money(r.precioActual)}/m²</b>)</> : null}.</p>
+        <p className="mt-2">Por eso: <b>valor hoy = lo que aportaste × (precio actual ÷ tu precio de entrada)</b>. Cuando el proyecto sube de etapa, tu valor sube tambien.</p>
+      </>
+    );
+  } else if (r.modo === "tramos") {
+    cuerpo = (
+      <>
+        <p>Tu ganancia es un <b>porcentaje fijo segun el mes en que se venda la propiedad</b> (no es una tasa anual).</p>
+        <p className="mt-2">Hoy, si se vendiera, te corresponderia <b>+{pct(r.rendimientoPct)}</b> sobre tu capital. Mientras mas avanza el plazo, mayor el porcentaje del tramo.</p>
+      </>
+    );
+  } else {
+    cuerpo = (
+      <>
+        <p>Tu capital gana una <b>tasa preferente anual de {pct(r.tasa)}</b>, contada <b>por dia</b> desde que inicio tu inversion.</p>
+        <p className="mt-2">Hoy llevas <b>{r.dias} dias</b>, por eso tu valor sube poco a poco. El "total al final" es lo que recibirias al completar tus aportaciones y llegar el plazo.</p>
+      </>
+    );
+  }
+  return (
+    <Modal open onClose={onClose} title="¿Como se calcula tu valor?" width="max-w-lg">
+      <div className="text-sm text-slate-600 leading-relaxed">{cuerpo}</div>
+      <div className="mt-3 text-xs text-slate-400">Las cifras son estimadas a hoy. Tu rendimiento se realiza al vender o devolver el capital, segun tu contrato.</div>
+      <div className="flex justify-end mt-5"><Btn onClick={onClose}>Entendido</Btn></div>
+    </Modal>
+  );
+}
+
+// ===================================================================
 // VISTA INVERSIONISTA (Fase 2 — solo lectura)
 // ===================================================================
-function InvestorApp({ clave, onLogout }) {
+function InvestorApp({ clave, onLogout, onClaveCambiada }) {
   const [data, setData] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -2558,11 +3691,21 @@ function InvestorApp({ clave, onLogout }) {
   const [reportando, setReportando] = useState(null);
   const [refDraft, setRefDraft] = useState("");
   const [compDraft, setCompDraft] = useState("");
+  const [montoDraft, setMontoDraft] = useState("");
   const [lightbox, setLightbox] = useState(null);
   // Folio de la inversion seleccionada para imprimir su estado de cuenta.
   // Solo ese documento lleva el id #estado-cuenta-print (los demas quedan ocultos),
   // asi un codesarrollador con 2+ inversiones imprime la que eligio.
   const [printFolio, setPrintFolio] = useState(null);
+  const [panel, setPanel] = useState(null); // 'cuenta' | 'duda' | 'invitar'
+  const [comoModal, setComoModal] = useState(null); // { rend, proyectoNombre }
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const notificar = useCallback((msg, tipo = "info") => {
+    setToast({ msg, tipo });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }, []);
 
   // Marca la inversion a imprimir y dispara la impresion en el siguiente frame
   // (para que React ya haya aplicado el id #estado-cuenta-print antes de window.print()).
@@ -2579,10 +3722,12 @@ function InvestorApp({ clave, onLogout }) {
       setData(res.data);
     } catch (err) {
       setError(err.message || "No se pudo cargar tu cartera.");
+      // Si la clave ya no es valida (la rotaron), cerrar sesion para no quedar atorado.
+      if (esErrorCredenciales(err.message)) { setError("Tu acceso cambio. Vuelve a entrar."); setTimeout(() => onLogout(), 1500); }
     } finally {
       setCargando(false);
     }
-  }, [clave]);
+  }, [clave, onLogout]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -2590,13 +3735,13 @@ function InvestorApp({ clave, onLogout }) {
   const enviarReporte = async (apId) => {
     if (BACKEND_LISTO) {
       try {
-        await apiCall("reportarPago", { clave, id: apId, referencia: refDraft, comprobanteUrl: compDraft });
-        setReportando(null); setRefDraft(""); setCompDraft("");
+        await apiCall("reportarPago", { clave, id: apId, referencia: refDraft, comprobanteUrl: compDraft, montoReportado: montoDraft });
+        setReportando(null); setRefDraft(""); setCompDraft(""); setMontoDraft("");
         cargar();
       } catch (err) { setError(err.message || "No se pudo reportar el pago."); }
     } else {
-      setReportes(prev => ({ ...prev, [apId]: { fechaReporte: todayISO(), referencia: refDraft, comprobanteUrl: compDraft } }));
-      setReportando(null); setRefDraft(""); setCompDraft("");
+      setReportes(prev => ({ ...prev, [apId]: { fechaReporte: todayISO(), referencia: refDraft, comprobanteUrl: compDraft, montoReportado: montoDraft } }));
+      setReportando(null); setRefDraft(""); setCompDraft(""); setMontoDraft("");
     }
   };
 
@@ -2614,36 +3759,46 @@ function InvestorApp({ clave, onLogout }) {
   // fechaSalida || hoy, calcularRendimiento) para que los totales cuadren.
   const portafolio = useMemo(() => {
     if (inversiones.length < 2) return null;
-    let totalInvertido = 0, valorHoy = 0;
+    let totalInvertido = 0, valorHoy = 0, totalFinal = 0, enConfig = 0;
     const proyectosSet = new Set();
     inversiones.forEach((iv) => {
-      const monto = num(iv.montoTotal);
-      const fechaFin = iv.fechaSalida && String(iv.fechaSalida).trim() ? iv.fechaSalida : todayISO();
-      const rend = calcularRendimiento(monto, iv.fechaInicio, fechaFin, iv.tasaAnual);
-      totalInvertido += monto;
+      const recibidoIv = aportacionesDeFolio(iv.folio).filter(a => estadoAportacion(a) === "Recibida").reduce((s, a) => s + num(a.monto), 0);
+      const rend = calcularRendimientoInversion(iv, recibidoIv, data?.preciosPlusvalia, proyectoPorId(iv.proyectoId));
+      // No mezclar: las inversiones plusvalia sin precio aun no tienen valor; se excluyen del consolidado.
+      if (rend.modo === "plusvalia" && rend.sinPrecios) { enConfig++; if (iv.proyectoId) proyectosSet.add(String(iv.proyectoId)); return; }
+      totalInvertido += rend.recibido;
       valorHoy += rend.totalARecibir;
+      totalFinal += rend.totalFinal;
       if (iv.proyectoId != null && String(iv.proyectoId).trim()) proyectosSet.add(String(iv.proyectoId));
     });
-    const gananciaTotal = Math.max(0, valorHoy - totalInvertido);
+    const gananciaTotal = valorHoy - totalInvertido; // puede ser negativo (se muestra tal cual, sin esconder)
     const rendimientoPonderado = totalInvertido > 0 ? (gananciaTotal / totalInvertido) * 100 : 0;
     return {
       totalInvertido,
       valorHoy,
+      totalFinal,
       gananciaTotal,
       rendimientoPonderado,
+      enConfig,
       numInversiones: inversiones.length,
       numProyectos: proyectosSet.size,
     };
-  }, [inversiones]);
+  }, [inversiones, aportaciones]);
 
   return (
     <div className="min-h-screen" style={{ background: "#f5f1ea" }}>
+      <Toast toast={toast} />
       <header style={{ background: "#0a0a0c" }}>
         <div className="max-w-3xl mx-auto px-4 py-3.5 flex items-center gap-3">
           <img src={logoWhite} alt="YODESARROLLO.MX" className="h-6 w-auto" style={{ mixBlendMode: "screen" }} />
-          <button onClick={onLogout} className="ml-auto inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg text-white/80 hover:text-white transition" style={{ background: "rgba(255,255,255,0.08)" }}>
-            <LogOut size={14} /> Salir
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => setPanel("cuenta")} className="inline-flex items-center gap-1.5 text-xs px-3 py-2 min-h-[40px] rounded-lg text-white/80 hover:text-white transition" style={{ background: "rgba(255,255,255,0.08)" }}>
+              <KeyRound size={14} /> <span className="hidden sm:inline">Mi cuenta</span>
+            </button>
+            <button onClick={onLogout} className="inline-flex items-center gap-1.5 text-xs px-3 py-2 min-h-[40px] rounded-lg text-white/80 hover:text-white transition" style={{ background: "rgba(255,255,255,0.08)" }}>
+              <LogOut size={14} /> Salir
+            </button>
+          </div>
         </div>
       </header>
 
@@ -2661,7 +3816,7 @@ function InvestorApp({ clave, onLogout }) {
           <>
             <div className="mb-1">
               <div className="text-2xl font-display text-slate-900">Hola, {(inv?.nombre || "").split(" ")[0] || "Codesarrollador"}</div>
-              <div className="text-sm text-slate-500">Este es el resumen de tu inversion con YoDesarrollo.</div>
+              <div className="text-sm text-slate-500">Este es el resumen de tu aportacion en YoDesarrollo.</div>
             </div>
 
             {/* RESUMEN CONSOLIDADO DEL PORTAFOLIO (solo con 2+ inversiones) */}
@@ -2677,32 +3832,34 @@ function InvestorApp({ clave, onLogout }) {
                   <div className="text-xs text-white/40 mt-3">{portafolio.numProyectos} {portafolio.numProyectos === 1 ? "proyecto" : "proyectos"} · invertiste {money(portafolio.totalInvertido)} · ganancia estimada {money(portafolio.gananciaTotal)}</div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2.5 mt-5">
-                  <div className="rounded-2xl p-3 text-center" style={{ background: "rgba(255,255,255,0.06)" }}>
+                <div className="grid grid-cols-3 gap-2 mt-5">
+                  <div className="rounded-2xl p-2.5 text-center min-w-0" style={{ background: "rgba(255,255,255,0.06)" }}>
                     <div className="text-[10px] uppercase tracking-wide" style={{ color: "rgba(255,255,255,0.45)" }}>Invertido</div>
-                    <div className="text-sm font-semibold text-white mt-0.5">{money(portafolio.totalInvertido)}</div>
+                    <div className="text-[13px] sm:text-sm font-semibold tabular-nums leading-tight text-white mt-0.5 break-words">{money(portafolio.totalInvertido)}</div>
                   </div>
-                  <div className="rounded-2xl p-3 text-center" style={{ background: "rgba(255,255,255,0.06)" }}>
+                  <div className="rounded-2xl p-2.5 text-center min-w-0" style={{ background: "rgba(255,255,255,0.06)" }}>
                     <div className="text-[10px] uppercase tracking-wide" style={{ color: "rgba(255,255,255,0.45)" }}>Ganancia</div>
-                    <div className="text-sm font-semibold mt-0.5" style={{ color: "#d4be8a" }}>{money(portafolio.gananciaTotal)}</div>
+                    <div className="text-[13px] sm:text-sm font-semibold tabular-nums leading-tight mt-0.5 break-words" style={{ color: "#d4be8a" }}>{money(portafolio.gananciaTotal)}</div>
                   </div>
-                  <div className="rounded-2xl p-3 text-center" style={{ background: "rgba(255,255,255,0.06)" }}>
+                  <div className="rounded-2xl p-2.5 text-center min-w-0" style={{ background: "rgba(255,255,255,0.06)" }}>
                     <div className="text-[10px] uppercase tracking-wide" style={{ color: "rgba(255,255,255,0.45)" }}>Inversiones</div>
-                    <div className="text-sm font-semibold text-white mt-0.5">{portafolio.numInversiones}</div>
+                    <div className="text-[13px] sm:text-sm font-semibold tabular-nums leading-tight text-white mt-0.5">{portafolio.numInversiones}</div>
                   </div>
                 </div>
               </div>
             )}
 
             {inversiones.length === 0 ? (
-              <EmptyState icon={Wallet} texto="Aun no tienes inversiones registradas. Contacta al equipo de YoDesarrollo." />
+              <div>
+                <EmptyState icon={Wallet} texto="Aun no tienes inversiones registradas. Escribenos y con gusto te ayudamos." />
+                <div className="text-center mt-3"><Btn variant="gold" onClick={() => setPanel("duda")}><MessageCircle size={15} /> Escribenos</Btn></div>
+              </div>
             ) : inversiones.map((iv) => {
               const proyecto = proyectoPorId(iv.proyectoId);
               const aps = aportacionesDeFolio(iv.folio).map(a => reportes[a.id] ? { ...a, ...reportes[a.id] } : a);
               const recibido = aps.filter(a => estadoAportacion(a) === "Recibida").reduce((s, a) => s + num(a.monto), 0);
               const monto = num(iv.montoTotal);
-              const fechaFin = iv.fechaSalida && String(iv.fechaSalida).trim() ? iv.fechaSalida : todayISO();
-              const rend = calcularRendimiento(monto, iv.fechaInicio, fechaFin, iv.tasaAnual);
+              const rend = calcularRendimientoInversion(iv, recibido, data?.preciosPlusvalia, proyecto);
               const ganancia = rend.ganancia;
               const pagosRecibidos = aps.filter(a => estadoAportacion(a) === "Recibida").length;
               const proximo = aps.find(a => estadoAportacion(a) !== "Recibida");
@@ -2716,12 +3873,17 @@ function InvestorApp({ clave, onLogout }) {
                   {/* HERO: cuanto vale hoy tu inversion */}
                   <div className="rounded-3xl p-6 text-center shadow-lg" style={{ background: "linear-gradient(160deg,#221a0f 0%,#1a1409 55%,#0a0a0c 100%)" }}>
                     <div className="text-[11px] tracking-[0.22em] uppercase mb-3" style={{ color: "#c9a96e" }}>{proyecto?.nombre || "Tu inversion"} · {iv.folio}</div>
-                    <div className="text-sm text-white/50">{liquidada ? "Tu inversion se liquido en" : "Hoy tu inversion vale"}</div>
+                    <div className="text-sm text-white/50">{liquidada ? "Tu inversion se liquido en" : "Valor estimado hoy de tu inversion"}</div>
                     <div className="font-display leading-none mt-1" style={{ color: "#e0c590", fontSize: "2.9rem" }}>{money(rend.totalARecibir)}</div>
                     <div className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold px-3 py-1 rounded-full" style={{ background: "rgba(201,169,110,0.16)", color: "#d4be8a" }}>
-                      <TrendingUp size={15} /> +{pct(rend.rendimientoPct)} · {rend.dias} dias
+                      <TrendingUp size={15} /> {rend.modo === "plusvalia" ? (rend.sinPrecios ? <>Plusvalia en configuracion</> : <>+{pct(rend.rendimientoPct)} · etapa {rend.etapaActualLabel}</>) : rend.modo === "tramos" ? (liquidada ? <>+{pct(rend.rendimientoPct)} al vender (mes {rend.mesFin})</> : <>+{pct(rend.rendimientoPct)} si se vende hoy</>) : <>+{pct(rend.rendimientoPct)} · {rend.dias} dias</>}
                     </div>
-                    <div className="text-xs text-white/40 mt-3">Invertiste {money(monto)} · ganancia estimada {money(ganancia)}</div>
+                    <div className="text-xs text-white/40 mt-3">Aportado hasta hoy {money(recibido)}{recibido < monto ? ` · comprometido ${money(monto)}` : ""} · ganancia a hoy {money(ganancia)}</div>
+                    {!liquidada ? <div className="text-[10px] text-white/30 mt-1">Es una estimacion al dia de hoy, no dinero disponible para retirar; se realiza al vender o devolver tu capital.</div> : null}
+                    <button onClick={() => setComoModal({ rend, proyectoNombre: proyecto?.nombre || "tu inversion" })} className="mt-2 text-[11px] inline-flex items-center gap-1 underline" style={{ color: "rgba(201,169,110,0.9)" }}><AlertCircle size={12} /> ¿Como se calcula mi valor?</button>
+                    {!liquidada && rend.totalFinal > rend.totalARecibir && !(rend.modo === "plusvalia" && rend.sinPrecios) ? (
+                      <div className="mt-2 text-[11px]" style={{ color: "rgba(201,169,110,0.85)" }}>{rend.modo === "plusvalia" ? <>Al vender (etapa {rend.etapaProyLabel}): ≈ {money(rend.totalFinal)} (+{pct(rend.rendPctFinal)})</> : rend.modo === "tramos" ? <>Al vender la casa (mes {rend.mesFin}): ≈ {money(rend.totalFinal)} (+{pct(rend.rendPctFinal)})</> : <>Al completar tu inversion{iv.fechaSalida ? ` (al ${fmtFecha(iv.fechaSalida)})` : ""}: ≈ {money(rend.totalFinal)}</>}</div>
+                    ) : null}
 
                     <div className="mt-5 text-left">
                       <div className="flex items-center justify-between text-[11px] mb-1.5" style={{ color: "rgba(255,255,255,0.55)" }}>
@@ -2738,7 +3900,7 @@ function InvestorApp({ clave, onLogout }) {
                   {!liquidada && proximo && estadoAportacion(proximo) === "En aprobacion" ? (
                     <div className="bg-white rounded-2xl border p-5 shadow-sm" style={{ borderColor: "#bfdbfe" }}>
                       <div className="flex items-center gap-2 mb-1"><Clock size={16} className="text-blue-600" /><div className="text-[11px] font-semibold uppercase tracking-wide text-blue-700">Pago en validacion</div></div>
-                      <div className="text-lg font-semibold text-slate-800">Reportaste {money(proximo.monto)}</div>
+                      <div className="text-lg font-semibold text-slate-800">Reportaste {money(proximo.montoReportado || proximo.monto)}</div>
                       <div className="text-sm text-slate-500 mt-0.5">{proximo.referencia ? <>Referencia: <b>{proximo.referencia}</b>. </> : null}Lo estamos validando; te avisaremos en cuanto quede como <b>Recibido</b>.</div>
                       {proximo.comprobanteUrl ? <a href={proximo.comprobanteUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 inline-flex items-center gap-1 mt-2"><ExternalLink size={13} /> Ver mi comprobante</a> : null}
                     </div>
@@ -2749,7 +3911,7 @@ function InvestorApp({ clave, onLogout }) {
                         <div className="text-xl font-semibold text-slate-800">Deposita {money(proximo.monto)}</div>
                         <div className="text-sm text-slate-500">{proximo.concepto || `Aportacion ${proximo.numeroPago}`} · vence {fmtFecha(proximo.fechaProgramada)}</div>
                       </div>
-                      {proyecto && (
+                      {proyecto && (proyecto.clabe || proyecto.cuenta) ? (
                         <div className="mt-3 rounded-xl bg-slate-50 border border-slate-100 p-3">
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
                             <DatoBanco label="Banco" valor={proyecto.banco} />
@@ -2759,30 +3921,48 @@ function InvestorApp({ clave, onLogout }) {
                           </div>
                           {proyecto.conceptoBase ? <div className="mt-2 text-xs text-slate-400">Concepto sugerido: {proyecto.conceptoBase}</div> : null}
                         </div>
+                      ) : (
+                        <div className="mt-3 rounded-xl bg-amber-50 border border-amber-200 p-3 flex items-start gap-2.5">
+                          <AlertCircle size={18} className="text-amber-600 shrink-0 mt-0.5" />
+                          <div className="text-xs text-amber-800">
+                            <div className="font-semibold">Cuenta de deposito en proceso</div>
+                            <div className="mt-0.5 text-amber-700">Estamos confirmando los datos bancarios de este proyecto. Por favor escribenos antes de depositar para darte la cuenta correcta.</div>
+                          </div>
+                        </div>
                       )}
                       {reportando === proximo.id ? (
                         <div className="mt-3 rounded-xl border border-slate-200 p-3 space-y-2">
                           <div className="text-sm font-medium text-slate-700">Reportar mi pago</div>
-                          <Input value={refDraft} onChange={(e) => setRefDraft(e.target.value)} placeholder="Numero de referencia / clave de rastreo" autoFocus />
+                          <Field label="¿Cuanto depositaste?" hint="Si pagaste un monto distinto al sugerido, ponlo aqui.">
+                            <Input type="number" value={montoDraft} onChange={(e) => setMontoDraft(e.target.value)} placeholder={String(proximo.monto || "")} />
+                          </Field>
+                          <Input value={refDraft} onChange={(e) => setRefDraft(e.target.value)} placeholder="Numero de referencia / clave de rastreo" />
                           <FileUpload auth={{ clave }} onSubido={(url) => setCompDraft(url)} nota="Sube la foto de tu comprobante (o pega el link abajo)." />
                           <Input value={compDraft} onChange={(e) => setCompDraft(e.target.value)} placeholder="Link del comprobante (se llena solo al subir)" />
                           <div className="flex items-center gap-2">
-                            <Btn variant="gold" disabled={!refDraft && !compDraft} onClick={() => enviarReporte(proximo.id)}><Check size={15} /> Enviar reporte</Btn>
+                            <Btn variant="gold" disabled={!montoDraft || Number(montoDraft) <= 0} onClick={() => enviarReporte(proximo.id)}><Check size={15} /> Enviar reporte</Btn>
                             <button onClick={() => setReportando(null)} className="text-sm text-slate-500 px-2">Cancelar</button>
                           </div>
                         </div>
                       ) : (
-                        <button onClick={() => { setReportando(proximo.id); setRefDraft(""); setCompDraft(""); }} className="mt-3 w-full inline-flex items-center justify-center gap-2 font-semibold text-sm rounded-xl py-3 transition hover:brightness-110" style={{ background: "#1a1409", color: "#e0c590" }}>
+                        <button onClick={() => { setReportando(proximo.id); setRefDraft(""); setCompDraft(""); setMontoDraft(String(proximo.monto || "")); }} className="mt-3 w-full inline-flex items-center justify-center gap-2 font-semibold text-sm rounded-xl py-3 transition hover:brightness-110" style={{ background: "#1a1409", color: "#e0c590" }}>
                           <CheckCircle2 size={16} /> Ya deposite — reportar mi pago
                         </button>
                       )}
                     </div>
                   ) : (
-                    <div className="bg-white rounded-2xl border border-emerald-100 p-5 flex items-center gap-3 shadow-sm">
-                      <div className="w-11 h-11 rounded-xl bg-emerald-50 flex items-center justify-center shrink-0"><BadgeCheck size={24} className="text-emerald-600" /></div>
-                      <div>
-                        <div className="font-semibold text-slate-800">{liquidada ? "Inversion liquidada" : "Estas al dia"}</div>
-                        <div className="text-sm text-slate-500">{liquidada ? "Gracias por confiar en YoDesarrollo." : "Completaste todas tus aportaciones. Gracias."}</div>
+                    <div className="bg-white rounded-2xl border border-emerald-100 p-5 shadow-sm">
+                      <div className="flex items-center gap-3">
+                        <div className="w-11 h-11 rounded-xl bg-emerald-50 flex items-center justify-center shrink-0"><BadgeCheck size={24} className="text-emerald-600" /></div>
+                        <div>
+                          <div className="font-semibold text-slate-800">{liquidada ? "Inversion liquidada" : "Estas al dia"}</div>
+                          <div className="text-sm text-slate-500">{liquidada ? "Recibiste tu capital + ganancia. Gracias por confiar en YoDesarrollo." : "Completaste todas tus aportaciones. Gracias."}</div>
+                        </div>
+                      </div>
+                      {/* Momento de orgullo: invitar a alguien (+1%). */}
+                      <div className="mt-3 pt-3 border-t border-emerald-50 flex items-center justify-between gap-2 flex-wrap">
+                        <div className="text-xs text-slate-500">{liquidada ? "¿Te gusto la experiencia? Invita a alguien:" : "¿Contento con tu inversion? Invita y gana +1%:"}</div>
+                        <Btn variant="gold" onClick={() => setPanel("invitar")}><Sparkles size={14} /> Invita y gana +1%</Btn>
                       </div>
                     </div>
                   )}
@@ -2830,7 +4010,7 @@ function InvestorApp({ clave, onLogout }) {
                     <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
                       <div className="flex items-center gap-2 mb-4">
                         <MessageCircle size={17} style={{ color: "#c9a96e" }} />
-                        <h3 className="font-semibold text-slate-800">Seguimiento de tu asesor</h3>
+                        <h3 className="font-semibold text-slate-800">Seguimiento del asesor inmobiliario</h3>
                       </div>
                       <ol className="relative border-l border-slate-200 ml-1.5 space-y-5">
                         {bitacora.map((b) => (
@@ -2856,11 +4036,11 @@ function InvestorApp({ clave, onLogout }) {
                       <ChevronDown size={16} className="text-slate-400 group-open:rotate-180 transition" />
                     </summary>
                     <div className="mt-4 overflow-x-auto">
-                      <table className="w-full text-sm min-w-[420px]">
+                      <table className="w-full text-sm min-w-0 sm:min-w-[420px]">
                         <tbody>
                           {aps.map((a) => (
                             <tr key={a.id} className="border-b border-slate-50 last:border-0">
-                              <td className="py-2 text-slate-600">{a.concepto || `Pago ${a.numeroPago}`}</td>
+                              <td className="py-2 text-slate-600 max-w-[110px] truncate sm:max-w-none sm:whitespace-normal">{a.concepto || `Pago ${a.numeroPago}`}</td>
                               <td className="py-2 text-slate-400 text-xs">{fmtFecha(a.fechaProgramada)}</td>
                               <td className="py-2 text-right tabular-nums font-medium text-slate-800">{money(a.monto)}</td>
                               <td className="py-2 text-right"><EstadoAportacionBadge ap={a} /></td>
@@ -2900,10 +4080,32 @@ function InvestorApp({ clave, onLogout }) {
                     proyecto={proyecto}
                     aportaciones={aps}
                     activo={printFolio === iv.folio}
+                    precios={data?.preciosPlusvalia}
                   />
                 </div>
               );
             })}
+            {/* Acciones: invitar (+1%) y escribirnos una duda */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <button onClick={() => setPanel("invitar")} className="text-left rounded-2xl p-4 shadow-sm transition hover:brightness-105" style={{ background: "linear-gradient(135deg,#d4be8a 0%,#c9a96e 100%)" }}>
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(26,20,9,0.14)" }}><Sparkles size={20} style={{ color: "#1a1409" }} /></div>
+                  <div>
+                    <div className="font-semibold text-sm" style={{ color: "#1a1409" }}>Invita y gana +1%</div>
+                    <div className="text-xs" style={{ color: "#5c4a24" }}>Si tu invitado participa, ganas +1% en tu devolucion.</div>
+                  </div>
+                </div>
+              </button>
+              <button onClick={() => setPanel("duda")} className="text-left rounded-2xl p-4 bg-white border border-slate-200 shadow-sm transition hover:border-slate-300">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0"><MessageCircle size={20} className="text-slate-600" /></div>
+                  <div>
+                    <div className="font-semibold text-sm text-slate-800">¿Tienes dudas? Escribenos</div>
+                    <div className="text-xs text-slate-500">Te respondemos por correo lo antes posible.</div>
+                  </div>
+                </div>
+              </button>
+            </div>
           </>
         )}
       </main>
@@ -2916,10 +4118,21 @@ function InvestorApp({ clave, onLogout }) {
             <div className="text-center text-white/90 mt-3">
               <div className="font-medium">{lightbox.titulo}</div>
               <div className="text-xs text-white/60">{lightbox.etapa ? lightbox.etapa + " · " : ""}{fmtFecha(lightbox.fecha)}</div>
+              <button
+                onClick={() => compartirTexto(`Avance de mi inversion${proyectoPorId(lightbox.proyectoId)?.nombre ? " en " + proyectoPorId(lightbox.proyectoId).nombre : ""} con YoDesarrollo 🏗️: ${lightbox.titulo || "nuevo avance"}. ${lightbox.url || SITIO_URL}`)}
+                className="mt-3 inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg" style={{ background: "rgba(255,255,255,0.12)", color: "#fff" }}
+              >
+                <MessageCircle size={14} /> Compartir este avance
+              </button>
             </div>
           </div>
         </div>
       )}
+
+      {panel === "cuenta" && <MiCuentaModal clave={clave} inv={inv} onClose={() => setPanel(null)} onClaveCambiada={onClaveCambiada} notificar={notificar} />}
+      {panel === "duda" && <DudaModal clave={clave} onClose={() => setPanel(null)} notificar={notificar} />}
+      {panel === "invitar" && <InvitarModal clave={clave} nombre={inv?.nombre} onClose={() => setPanel(null)} notificar={notificar} />}
+      {comoModal && <ComoCalculaModal info={comoModal} onClose={() => setComoModal(null)} />}
     </div>
   );
 }
@@ -2932,8 +4145,10 @@ export default function App() {
     try {
       const a = sessionStorage.getItem(ADMIN_KEY);
       if (a) { const o = JSON.parse(a); if (o && o.pass) return { rol: "admin", pass: o.pass }; }
-      const i = sessionStorage.getItem(INVESTOR_KEY);
+      const i = localStorage.getItem(INVESTOR_KEY);
       if (i) { const o = JSON.parse(i); if (o && o.clave) return { rol: "investor", clave: o.clave }; }
+      const s = localStorage.getItem(ASESOR_KEY);
+      if (s) { const o = JSON.parse(s); if (o && o.clave) return { rol: "asesor", clave: o.clave }; }
     } catch (e) { /* noop */ }
     return null;
   });
@@ -2944,13 +4159,18 @@ export default function App() {
   }, []);
 
   const entrarInversionista = useCallback((clave) => {
-    try { sessionStorage.setItem(INVESTOR_KEY, JSON.stringify({ sesion: true, clave })); } catch (e) { /* noop */ }
+    try { localStorage.setItem(INVESTOR_KEY, JSON.stringify({ sesion: true, clave })); } catch (e) { /* noop */ }
     setSesion({ rol: "investor", clave });
+  }, []);
+
+  const entrarAsesor = useCallback((clave) => {
+    try { localStorage.setItem(ASESOR_KEY, JSON.stringify({ sesion: true, clave })); } catch (e) { /* noop */ }
+    setSesion({ rol: "asesor", clave });
   }, []);
 
   const salir = useCallback(() => {
     // Limpiamos tambien el cache local para no dejar datos sensibles tras cerrar sesion.
-    try { sessionStorage.removeItem(ADMIN_KEY); sessionStorage.removeItem(INVESTOR_KEY); localStorage.removeItem(CACHE_KEY); } catch (e) { /* noop */ }
+    try { sessionStorage.removeItem(ADMIN_KEY); localStorage.removeItem(INVESTOR_KEY); localStorage.removeItem(ASESOR_KEY); sessionStorage.removeItem(INVESTOR_KEY); sessionStorage.removeItem(ASESOR_KEY); localStorage.removeItem(CACHE_KEY); } catch (e) { /* noop */ }
     setSesion(null);
   }, []);
 
@@ -2995,10 +4215,12 @@ export default function App() {
         <LoginGate
           onAdmin={entrarAdmin}
           onInvestor={(clave) => entrarInversionista(clave)}
+          onAsesor={(clave) => entrarAsesor(clave)}
         />
       )}
       {sesion?.rol === "admin" && <AdminApp pass={sesion.pass} onLogout={salir} />}
-      {sesion?.rol === "investor" && <InvestorApp clave={sesion.clave} onLogout={salir} />}
+      {sesion?.rol === "investor" && <InvestorApp clave={sesion.clave} onLogout={salir} onClaveCambiada={entrarInversionista} />}
+      {sesion?.rol === "asesor" && <AsesorApp clave={sesion.clave} onLogout={salir} />}
     </ErrorBoundary>
   );
 }
