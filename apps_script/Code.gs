@@ -33,6 +33,13 @@ const SHEET_ID = '11DiE789WIVqIybKTPapayS5XEWHtcAXUiUA11KBQUQc';
 const TZ = 'America/Hermosillo';
 
 // ---------------------------------------------------------------------------
+//  URL DEL PORTAL (sitio publico en GitHub Pages)
+// ---------------------------------------------------------------------------
+//  La usamos en los correos (recuperar clave, avisar avance) y para armar el
+//  link magico de acceso. Es una sola constante para no repetirla.
+const PORTAL_URL = 'https://alexpueblag.github.io/Co-desarrolladores-Yod/';
+
+// ---------------------------------------------------------------------------
 //  CONFIGURACION DE LAS PESTANAS (HOJAS) DEL SHEET
 // ---------------------------------------------------------------------------
 //  Aqui definimos como se llama cada hoja, cual es su columna llave
@@ -209,6 +216,9 @@ function doPost(e) {
       case 'adminLogin':
         return adminLogin(body);
 
+      case 'loginConToken':
+        return loginConToken(body);
+
       // --- Solo admin (validan ADMIN_PASS) ---
       case 'getAll':
         return getAll(body);
@@ -218,6 +228,12 @@ function doPost(e) {
 
       case 'delete':
         return remove(body);
+
+      case 'notificarAvance':
+        return notificarAvance(body);
+
+      case 'generarLinkAcceso':
+        return generarLinkAcceso(body);
 
       // --- Inversionista (validan claveAcceso) ---
       case 'investorLogin':
@@ -584,7 +600,7 @@ function recuperarClave(body) {
   hoja.getRange(indiceFila, 1, 1, conf.headers.length).setValues([valores]);
 
   // Enviar el correo con la clave nueva.
-  const portalUrl = 'https://alexpueblag.github.io/Co-desarrolladores-Yod/';
+  const portalUrl = PORTAL_URL;
   const nombre = inv.nombre ? String(inv.nombre) : 'Codesarrollador';
   const asunto = 'Tu acceso al portal de YoDesarrollo';
   const cuerpo =
@@ -600,6 +616,154 @@ function recuperarClave(body) {
     console.error('Error enviando correo de recuperacion: ' + String(e));
   }
   return jsonResponse(generico);
+}
+
+// --- notificarAvance: avisa por correo a los codesarrolladores -------------
+//  Solo admin. Recibe un proyectoId (y opcionalmente un mensaje). Junta los
+//  correos UNICOS de los codesarrolladores de ese proyecto (inversiones con
+//  ese proyectoId -> inversionistas -> emails) y les manda un correo avisando
+//  que hay un nuevo avance, con el link al portal. Es OPT-IN: solo se manda
+//  cuando el admin aprieta el boton, no automatico (para no spamear).
+//  Devuelve { ok, enviados:n }.
+function notificarAvance(body) {
+  if (!esAdmin(body.pass)) {
+    return jsonResponse({ ok: false, error: 'Credenciales invalidas' });
+  }
+
+  const proyectoId = (body.proyectoId !== undefined && body.proyectoId !== null) ? String(body.proyectoId).trim() : '';
+  if (proyectoId === '') return jsonResponse({ ok: false, error: 'Falta el proyecto.' });
+
+  // Buscar el proyecto para usar su nombre en el correo.
+  const proyectos = leerHoja('Proyectos');
+  let proyecto = null;
+  for (let i = 0; i < proyectos.length; i++) {
+    if (String(proyectos[i].id).trim() === proyectoId) { proyecto = proyectos[i]; break; }
+  }
+  if (!proyecto) return jsonResponse({ ok: false, error: 'Proyecto no encontrado' });
+  const nombreProyecto = proyecto.nombre ? String(proyecto.nombre) : 'tu proyecto';
+
+  // Inversionistas que aportan a este proyecto (via la hoja Inversiones).
+  const inversiones = leerHoja('Inversiones');
+  const idsCodes = {};
+  for (let i = 0; i < inversiones.length; i++) {
+    if (String(inversiones[i].proyectoId).trim() === proyectoId) {
+      idsCodes[String(inversiones[i].inversionistaId).trim()] = true;
+    }
+  }
+
+  // Resolver emails unicos de esos inversionistas.
+  const inversionistas = leerHoja('Inversionistas');
+  const emails = {};
+  for (let i = 0; i < inversionistas.length; i++) {
+    const id = String(inversionistas[i].id).trim();
+    if (!idsCodes[id]) continue;
+    const email = String(inversionistas[i].email || '').trim();
+    if (email !== '') emails[email.toLowerCase()] = email;
+  }
+
+  // Armar y mandar el correo a cada email (uno por uno, sin abortar si falla).
+  const asunto = 'Nuevo avance en ' + nombreProyecto;
+  const cuerpo = (body.mensaje !== undefined && body.mensaje !== null && String(body.mensaje).trim() !== '')
+    ? String(body.mensaje)
+    : ('Hay un nuevo avance en tu proyecto ' + nombreProyecto + '. Entra a verlo: ' + PORTAL_URL);
+
+  let enviados = 0;
+  const claves = Object.keys(emails);
+  for (let i = 0; i < claves.length; i++) {
+    try {
+      MailApp.sendEmail(emails[claves[i]], asunto, cuerpo);
+      enviados++;
+    } catch (e) {
+      console.error('notificarAvance: error enviando a ' + emails[claves[i]] + ': ' + String(e));
+    }
+  }
+
+  return jsonResponse({ ok: true, enviados: enviados });
+}
+
+// --- generarLinkAcceso: crea un "link magico" de acceso sin teclear clave ---
+//  Solo admin. Recibe un inversionistaId, genera un token aleatorio con
+//  expiracion (7 dias) y lo guarda en PropertiesService (NO toca el Sheet):
+//    'tok_'+token = JSON { inversionistaId, exp }
+//  Devuelve la URL del portal con el token en el query (?t=...). El admin se la
+//  envia al cliente; al abrirla, el front canjea el token y entra solo.
+function generarLinkAcceso(body) {
+  if (!esAdmin(body.pass)) {
+    return jsonResponse({ ok: false, error: 'Credenciales invalidas' });
+  }
+
+  const inversionistaId = (body.inversionistaId !== undefined && body.inversionistaId !== null)
+    ? String(body.inversionistaId).trim()
+    : '';
+  if (inversionistaId === '') return jsonResponse({ ok: false, error: 'Falta el codesarrollador.' });
+
+  // Validar que el inversionista exista (no generamos links a fantasmas).
+  const inversionistas = leerHoja('Inversionistas');
+  let existe = false;
+  for (let i = 0; i < inversionistas.length; i++) {
+    if (String(inversionistas[i].id).trim() === inversionistaId) { existe = true; break; }
+  }
+  if (!existe) return jsonResponse({ ok: false, error: 'Codesarrollador no encontrado' });
+
+  // Token aleatorio robusto (UUID) + expiracion a 7 dias.
+  const token = Utilities.getUuid();
+  const exp = Date.now() + 7 * 24 * 60 * 60 * 1000;
+  PropertiesService.getScriptProperties()
+    .setProperty('tok_' + token, JSON.stringify({ inversionistaId: inversionistaId, exp: exp }));
+
+  return jsonResponse({ ok: true, url: PORTAL_URL + '?t=' + token });
+}
+
+// --- loginConToken: canjea un "link magico" por la clave del inversionista --
+//  Publica (el usuario aun no tiene sesion). Recibe el token del query (?t=),
+//  valida que exista y no este vencido en PropertiesService, busca al
+//  inversionista y devuelve su claveAcceso para que el front la use como sesion
+//  normal de inversionista (igual que investorLogin, pero sin teclear). El
+//  token sigue valido hasta su expiracion para tolerar recargas del navegador.
+function loginConToken(body) {
+  if (demasiadosIntentos()) {
+    return jsonResponse({ ok: false, error: 'Demasiados intentos, espera un momento e intenta de nuevo.' });
+  }
+
+  const token = (body.token !== undefined && body.token !== null) ? String(body.token).trim() : '';
+  if (token === '') {
+    registrarIntentoFallido();
+    return jsonResponse({ ok: false, error: 'Enlace invalido o vencido' });
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  const raw = props.getProperty('tok_' + token);
+  if (!raw) {
+    registrarIntentoFallido();
+    return jsonResponse({ ok: false, error: 'Enlace invalido o vencido' });
+  }
+
+  let datos = null;
+  try {
+    datos = JSON.parse(raw);
+  } catch (e) {
+    props.deleteProperty('tok_' + token);
+    return jsonResponse({ ok: false, error: 'Enlace invalido o vencido' });
+  }
+
+  if (!datos || !datos.exp || Date.now() > Number(datos.exp)) {
+    props.deleteProperty('tok_' + token); // limpiamos el token vencido
+    return jsonResponse({ ok: false, error: 'Enlace vencido' });
+  }
+
+  // Buscar al inversionista para devolver su clave de acceso vigente.
+  const inversionistaId = String(datos.inversionistaId).trim();
+  const inversionistas = leerHoja('Inversionistas');
+  let inv = null;
+  for (let i = 0; i < inversionistas.length; i++) {
+    if (String(inversionistas[i].id).trim() === inversionistaId) { inv = inversionistas[i]; break; }
+  }
+  if (!inv) {
+    props.deleteProperty('tok_' + token);
+    return jsonResponse({ ok: false, error: 'Enlace invalido o vencido' });
+  }
+
+  return jsonResponse({ ok: true, clave: inv.claveAcceso });
 }
 
 // --- subirArchivo: sube un archivo (foto/comprobante) a Drive --------------

@@ -1585,6 +1585,24 @@ function AdminApp({ pass, onLogout }) {
             onNuevaNota={(proyectoId) => nuevoRegistro("Bitacora", { proyectoId })}
             onEditarNota={(row) => setModal({ tab: "Bitacora", row: { ...row }, esNuevo: false })}
             onEliminarNota={(row) => setConfirm({ tab: "Bitacora", key: row.id, msg: `Se eliminara la nota de bitacora.` })}
+            onNotificar={async (proyectoId) => {
+              try {
+                const r = await apiCall("notificarAvance", { pass, proyectoId });
+                notificar(`Aviso enviado a ${r.enviados} codesarrollador(es).`, "ok");
+              } catch (e) {
+                notificar(manejarError(e), "error");
+              }
+            }}
+            onGenerarLink={async (inversionistaId) => {
+              try {
+                const r = await apiCall("generarLinkAcceso", { pass, inversionistaId });
+                notificar("Link generado. Copialo y enviaselo al cliente.", "ok");
+                return r.url;
+              } catch (e) {
+                notificar(manejarError(e), "error");
+                return null;
+              }
+            }}
           />
         )}
 
@@ -1925,7 +1943,10 @@ function ListaInversiones({ data, inversionistaPorId, proyectoPorId, capitalReci
 // TABLERO DE PROYECTO — gestiona avances y bitacora a NIVEL PROYECTO
 // (los comparten todos los codesarrolladores de ese proyecto)
 // ===================================================================
-function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEditarProyecto, onAbrirInversion, onNuevoAvance, onEditarAvance, onEliminarAvance, onNuevaNota, onEditarNota, onEliminarNota }) {
+function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEditarProyecto, onAbrirInversion, onNuevoAvance, onEditarAvance, onEliminarAvance, onNuevaNota, onEditarNota, onEliminarNota, onNotificar, onGenerarLink }) {
+  const [enviandoAviso, setEnviandoAviso] = useState(false);
+  const [generandoLink, setGenerandoLink] = useState("");  // inversionistaId en proceso
+  const [linksGenerados, setLinksGenerados] = useState({}); // { inversionistaId: url }
   const p = arr(data.Proyectos).find(x => String(x.id) === String(proyectoId));
   if (!p) {
     return (<div><Btn variant="outline" onClick={onVolver}><ArrowLeft size={16} /> Proyectos</Btn><p className="text-sm text-slate-500 mt-4">No se encontro el proyecto.</p></div>);
@@ -2028,20 +2049,67 @@ function ProyectoDetalle({ proyectoId, data, inversionistaPorId, onVolver, onEdi
 
       {/* Codesarrolladores de este proyecto */}
       <div className="bg-white rounded-2xl border border-slate-200 p-4">
-        <h3 className="font-semibold text-slate-800 flex items-center gap-2 mb-3"><Users size={18} /> Codesarrolladores <span className="text-sm font-normal text-slate-400">({inversiones.length})</span></h3>
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><Users size={18} /> Codesarrolladores <span className="text-sm font-normal text-slate-400">({inversiones.length})</span></h3>
+          {inversiones.length > 0 && onNotificar ? (
+            <Btn
+              variant="outline"
+              disabled={enviandoAviso}
+              onClick={async () => {
+                if (enviandoAviso) return;
+                setEnviandoAviso(true);
+                try { await onNotificar(proyectoId); }
+                finally { setEnviandoAviso(false); }
+              }}
+            >
+              {enviandoAviso ? <Loader2 size={15} className="animate-spin" /> : <MessageCircle size={15} />}
+              {enviandoAviso ? "Enviando…" : "Avisar a codesarrolladores"}
+            </Btn>
+          ) : null}
+        </div>
         {inversiones.length === 0 ? (
           <p className="text-sm text-slate-400">Aun no hay codesarrolladores en este proyecto.</p>
         ) : (
           <ul className="divide-y divide-slate-100">
             {inversiones.map((iv) => {
               const inv = inversionistaPorId(iv.inversionistaId);
+              const invId = String(iv.inversionistaId || "");
+              const linkUrl = linksGenerados[invId];
+              const generandoEste = generandoLink === invId;
               return (
-                <li key={iv.folio} className="py-2 flex items-center gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-slate-700 truncate">{inv?.nombre || "—"}</div>
-                    <div className="text-xs text-slate-400 font-mono">{iv.folio} · {money(num(iv.montoTotal))}</div>
+                <li key={iv.folio} className="py-2">
+                  <div className="flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium text-slate-700 truncate">{inv?.nombre || "—"}</div>
+                      <div className="text-xs text-slate-400 font-mono">{iv.folio} · {money(num(iv.montoTotal))}</div>
+                    </div>
+                    {onGenerarLink && invId ? (
+                      <Btn
+                        variant="outline"
+                        disabled={generandoEste}
+                        onClick={async () => {
+                          if (generandoEste) return;
+                          setGenerandoLink(invId);
+                          try {
+                            const url = await onGenerarLink(invId);
+                            if (url) setLinksGenerados((m) => ({ ...m, [invId]: url }));
+                          } finally {
+                            setGenerandoLink("");
+                          }
+                        }}
+                      >
+                        {generandoEste ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />}
+                        {generandoEste ? "Generando…" : "Generar link de acceso"}
+                      </Btn>
+                    ) : null}
+                    <IconBtn onClick={() => onAbrirInversion(iv.folio)} icon={ChevronRight} title="Abrir inversion" />
                   </div>
-                  <IconBtn onClick={() => onAbrirInversion(iv.folio)} icon={ChevronRight} title="Abrir inversion" />
+                  {linkUrl ? (
+                    <div className="mt-2 rounded-lg bg-slate-50 border border-slate-100 p-2 flex items-center gap-2">
+                      <div className="min-w-0 flex-1 text-[11px] text-slate-500 font-mono truncate" title={linkUrl}>{linkUrl}</div>
+                      <CopyButton value={linkUrl} label="Copiar link" />
+                    </div>
+                  ) : null}
                 </li>
               );
             })}
@@ -2884,6 +2952,41 @@ export default function App() {
     // Limpiamos tambien el cache local para no dejar datos sensibles tras cerrar sesion.
     try { sessionStorage.removeItem(ADMIN_KEY); sessionStorage.removeItem(INVESTOR_KEY); localStorage.removeItem(CACHE_KEY); } catch (e) { /* noop */ }
     setSesion(null);
+  }, []);
+
+  // --- LINK MAGICO: si la URL trae ?t=TOKEN, canjearlo y entrar como inversionista ---
+  //  Corre UNA sola vez al montar. Si ya hay una sesion (admin o inversionista)
+  //  NO la pisamos: solo limpiamos el token de la URL. Si el token es valido,
+  //  pedimos al backend la clave del inversionista y entramos como hoy.
+  useEffect(() => {
+    let token = "";
+    try {
+      const params = new URLSearchParams(window.location.search);
+      token = params.get("t") || "";
+    } catch (e) { /* noop */ }
+    if (!token) return;
+
+    // Quitar el ?t de la URL para no dejarlo a la vista ni reusarlo al recargar.
+    const limpiarUrl = () => {
+      try { window.history.replaceState({}, "", window.location.pathname); } catch (e) { /* noop */ }
+    };
+
+    // Si ya hay sesion activa, respetarla: solo limpiamos la URL.
+    if (sesion) { limpiarUrl(); return; }
+
+    let cancelado = false;
+    (async () => {
+      try {
+        const res = await apiCall("loginConToken", { token });
+        if (!cancelado && res && res.ok && res.clave) {
+          entrarInversionista(res.clave);
+        }
+      } catch (e) { /* enlace invalido o vencido: cae al LoginGate normal */ }
+      finally { limpiarUrl(); }
+    })();
+
+    return () => { cancelado = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
