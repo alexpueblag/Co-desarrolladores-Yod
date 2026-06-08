@@ -74,7 +74,10 @@ function telefonoWA(tel) {
   if (d.length === 12 && d.slice(0, 2) === "52") return d;         // ya trae 52
   if (d.length === 13 && d.slice(0, 3) === "521") return "52" + d.slice(3); // viejo 521...
   if (d.length === 11 && d[0] === "1") return d;                   // US/CA con 1
-  return d; // mejor esfuerzo
+  // Si no encaja en ningun patron conocido, solo aceptamos algo con pinta de
+  // numero internacional (11-15 digitos); si no, devolvemos "" para no abrir
+  // un wa.me roto (ej. una extension suelta "ext 500" -> "500").
+  return (d.length >= 11 && d.length <= 15) ? d : "";
 }
 
 // Abre WhatsApp dirigido a UN numero con el mensaje ya escrito (el admin solo da
@@ -430,7 +433,7 @@ function parseTramos(raw) {
       .filter((x) => x
         && String(x.desde).trim() !== "" && Number.isFinite(Number(x.desde)) && Number(x.desde) >= 1
         && String(x.hasta).trim() !== "" && Number.isFinite(Number(x.hasta)) && Number(x.hasta) >= Number(x.desde)
-        && String(x.pct).trim() !== "" && Number.isFinite(Number(x.pct)))
+        && String(x.pct).trim() !== "" && Number.isFinite(Number(x.pct)) && Number(x.pct) >= 0)
       .map((x) => ({ desde: Number(x.desde), hasta: Number(x.hasta), pct: Number(x.pct) }))
       .sort((a, b) => (a.desde - b.desde) || (a.hasta - b.hasta));
   } catch (e) { return []; }
@@ -540,7 +543,9 @@ function calcularRendimientoInversion(inv, capitalRecibido, precios, proyecto) {
   }
 
   // ----- MODO ANUAL: tasa anual sobre lo aportado, desde el inicio -----
-  const tasa = (inv.tasaAnual === "" || inv.tasaAnual == null) ? TASA_DEFAULT : Number(inv.tasaAnual);
+  // Tasa vacia -> default; negativa o basura -> 0 (este producto no tiene
+  // rendimientos negativos; un - por error de captura no debe mostrar perdidas).
+  const tasa = (inv.tasaAnual === "" || inv.tasaAnual == null) ? TASA_DEFAULT : Math.max(0, num(inv.tasaAnual));
   const dias = diasEntre(inv.fechaInicio, corte);
   const rendimientoPct = dias * (tasa / 365);
   const ganancia = recibido * (rendimientoPct / 100);
@@ -1557,10 +1562,10 @@ function InversionForm({ value, onChange, inversionistas, proyectos, precios, es
           </Select>
         </Field>
         <Field label="Monto total comprometido">
-          <Input type="number" value={value.montoTotal || ""} onChange={(e) => set("montoTotal", e.target.value)} placeholder="1000000" />
+          <Input type="number" min="0" value={value.montoTotal || ""} onChange={(e) => set("montoTotal", e.target.value)} placeholder="1000000" />
         </Field>
         <Field label="Tasa anual (%)">
-          <Input type="number" value={value.tasaAnual ?? TASA_DEFAULT} onChange={(e) => set("tasaAnual", e.target.value)} step="0.1" />
+          <Input type="number" min="0" value={value.tasaAnual ?? TASA_DEFAULT} onChange={(e) => set("tasaAnual", e.target.value)} step="0.1" />
         </Field>
         <Field label="Fecha de inicio" hint="Arranca el conteo de dias del rendimiento.">
           <Input type="date" value={toDateInput(value.fechaInicio)} onChange={(e) => set("fechaInicio", e.target.value)} />
@@ -1645,7 +1650,7 @@ function TramosEditor({ value, onChange }) {
             <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 items-center">
               <Input type="number" min={1} value={t.desde ?? ""} onChange={(e) => setRow(i, "desde", e.target.value)} placeholder="Desde" />
               <Input type="number" min={1} value={t.hasta ?? ""} onChange={(e) => setRow(i, "hasta", e.target.value)} placeholder="Hasta" />
-              <Input type="number" step="0.01" value={t.pct ?? ""} onChange={(e) => setRow(i, "pct", e.target.value)} placeholder="%" />
+              <Input type="number" min="0" step="0.01" value={t.pct ?? ""} onChange={(e) => setRow(i, "pct", e.target.value)} placeholder="%" />
               <IconBtn onClick={() => quitar(i)} icon={Trash2} title="Quitar" danger />
             </div>
           ))}
@@ -1831,7 +1836,7 @@ function AportacionForm({ value, onChange, pass }) {
           <Input type="number" value={value.totalPagos || ""} onChange={(e) => set("totalPagos", e.target.value)} min={1} />
         </Field>
         <Field label="Monto">
-          <Input type="number" value={value.monto || ""} onChange={(e) => set("monto", e.target.value)} />
+          <Input type="number" min="0" value={value.monto || ""} onChange={(e) => set("monto", e.target.value)} />
         </Field>
         <Field label="Fecha comprometida" hint="Cuando toca pagar.">
           <Input type="date" value={toDateInput(value.fechaProgramada)} onChange={(e) => set("fechaProgramada", e.target.value)} />
@@ -1949,8 +1954,8 @@ function WizardAlta({ proyectos, onCrear, onClose }) {
 
           <div className="grid md:grid-cols-3 gap-3">
             <Field label="Folio" hint="Ej. CA-HM-2026-01"><Input value={d.folio} onChange={e => set("folio", e.target.value)} placeholder="CA-HM-2026-01" /></Field>
-            <Field label="Monto total (MXN)"><Input type="number" value={d.montoTotal} onChange={e => set("montoTotal", e.target.value)} placeholder="1000000" /></Field>
-            <Field label="Tasa anual (%)"><Input type="number" value={d.tasaAnual} onChange={e => set("tasaAnual", e.target.value)} /></Field>
+            <Field label="Monto total (MXN)"><Input type="number" min="0" value={d.montoTotal} onChange={e => set("montoTotal", e.target.value)} placeholder="1000000" /></Field>
+            <Field label="Tasa anual (%)"><Input type="number" min="0" value={d.tasaAnual} onChange={e => set("tasaAnual", e.target.value)} /></Field>
             <Field label="Fecha de inicio"><Input type="date" value={d.fechaInicio} onChange={e => set("fechaInicio", e.target.value)} /></Field>
             <Field label="Numero de pagos"><Input type="number" value={d.numPagos} onChange={e => set("numPagos", e.target.value)} /></Field>
             <Field label="Primer pago (opcional)" hint="Si el 1er pago es distinto"><Input type="number" value={d.primerPago} onChange={e => set("primerPago", e.target.value)} placeholder="ej. 350000" /></Field>
@@ -2155,7 +2160,9 @@ function AdminApp({ pass, onLogout }) {
       if (resto > 0.5) {
         await guardarFila("Aportaciones", {
           folio: a.folio,
-          numeroPago: a.numeroPago,
+          // El resto va justo despues del pago original y con numero propio
+          // (no duplica el numeroPago de la aportacion original).
+          numeroPago: num(a.numeroPago) + 0.5,
           totalPagos: a.totalPagos,
           concepto: `Resto de ${a.concepto || ("Aportacion " + a.numeroPago)}`,
           fechaProgramada: a.fechaProgramada || todayISO(),
