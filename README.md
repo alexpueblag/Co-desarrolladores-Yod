@@ -1,12 +1,27 @@
-# NO BORRAR — cascaron pre-montado de `Co-desarrolladores-Yod`
+# Cascaron · Co-desarrolladores-Yod
 
-Este repo existe para que, el dia de la mudanza, la liga vieja
-`https://alexpueblag.github.io/Co-desarrolladores-Yod/` no muera ni un minuto.
+Este repo **no tiene codigo**. Es una direccion vieja que sigue viva.
 
-Ese dia se renombra a `Co-desarrolladores-Yod` y toma su lugar **ya construido**.
-Mientras tanto no sirve a nadie y parece basura. No lo es.
+El tablero real vive en `yodesarrollomx/Co-desarrolladores-Yod` y se sirve en:
+<https://yodesarrollomx.github.io/Co-desarrolladores-Yod/>
 
-Borrarlo obliga a crear el cascaron a mano el dia del corte, con la
-liga vieja caida mientras tanto — y con el riesgo de que GitHub haya
-retirado el nombre `Co-desarrolladores-Yod` por trafico, en cuyo caso esa direccion
-se pierde para siempre.
+Cuando el repo se transfirio a la organizacion, GitHub dejo de redirigir su
+GitHub Pages (lo dice su documentacion: *"we don't redirect GitHub Pages
+associated with the repository"*). Sin este cascaron,
+`https://alexpueblag.github.io/Co-desarrolladores-Yod/` daria 404 para siempre.
+
+El `404.html` recibe cualquier ruta que no exista y reenvia conservando la
+ruta, el query string y el fragmento.
+
+## NO BORRAR · NO ARCHIVAR · NO RENOMBRAR
+
+De esta direccion cuelgan:
+
+- QRs **ya impresos**, que no se pueden reimprimir
+- captions de publicaciones de Facebook e Instagram **ya publicadas**
+- ligas mandadas por WhatsApp a clientes e inversionistas
+
+Nada de eso se puede corregir. Si alguien borra este repo, o lo archiva, o
+apaga su GitHub Pages, esas ligas mueren y no hay forma de recuperarlas.
+
+Este cascaron es **permanente**. No es un puente de una semana.
