@@ -27,7 +27,9 @@ Portal privado donde cada **codesarrollador** (inversionista de YoDesarrollo SAP
 
 ## Archivos
 
-- `src/App.jsx` — **la app entera** (4,820 líneas). Config arriba: `APPS_SCRIPT_URL` (`:17`), `SITIO_URL` (`:19`), llaves de sesión en localStorage (`:21-24`). Aquí viven los 3 logins, el CRUD de admin, la vista del codesarrollador, la calculadora, el PDF y el lightbox.
+> **DÓNDE VIVE EL CÓDIGO (léelo antes que la lista).** El código vive en **`yodesarrollomx/Co-desarrolladores-Yod`** (`gh api …/contents` lista `src`, `apps_script`, `.clasp.json`, `vite.config.js`… 2026-09-04). El clon de `~/Desktop/Co-desarrolladores-Yod` es el repo **cascarón** de `alexpueblag`: `git ls-files` devuelve exactamente 5 archivos (`.nojekyll`, `404.html`, `CLAUDE.md`, `README.md`, `index.html`) y su `index.html` es la página "Se mudó". **Ese clon NO sirve para tocar la app: hay que clonar el de la org.** Las citas `archivo:línea` de abajo (y las de Reglas INVIOLABLES) corresponden al árbol del commit **`f15154f`** (2026-08-31), cuya raíz coincide con la del repo de la org.
+
+- `src/App.jsx` — **la app entera** (4,820 líneas en `f15154f`). Config arriba: `APPS_SCRIPT_URL` (`:17`), `SITIO_URL` (`:19`), llaves de sesión en localStorage (`:21-24`). Aquí viven los 3 logins, el CRUD de admin, la vista del codesarrollador, la calculadora, el PDF y el lightbox.
 - `apps_script/Código.js` — **espejo** del backend (ver advertencia abajo). `SHEET_ID` (`:1`), `PORTAL_URL` (`:40`), definición de las 9 hojas en `TABS` (`:48`), router `doPost` (`:517`).
 - `apps_script/appsscript.json` — manifiesto (scopes) del script.
 - `.clasp.json` — `scriptId` del Apps Script. `rootDir: apps_script`.
@@ -35,7 +37,7 @@ Portal privado donde cada **codesarrollador** (inversionista de YoDesarrollo SAP
 - `index.html` — cascarón HTML; fuentes Instrument Serif + Manrope (identidad Fintech Editorial de los boards, ver [[boards-identidad-fintech]]).
 - `SETUP.md` — guía paso a paso para Alejandro de cómo pegar y publicar el Apps Script.
 - `scripts/pruebas-escenarios.mjs` — harness de escenarios de cálculo (commit `705f201`).
-- `.github/workflows/deploy.yml` — existe en disco, **pero `.gitignore` ignora `.github/workflows/`** y `git ls-files` no lo lista: no está versionado y por eso el Action no publica. Ver Arquitectura.
+- `.github/workflows/deploy.yml` — existe en disco del clon del Escritorio pero **sin rastrear**: `git status` lo marca `??` y `git ls-files` no lo lista, o sea nunca se commiteó, y por eso el Action no publica. En este clon ya **no hay `.gitignore`** (`ls` da "No such file or directory" y `git check-ignore -v` sale con código 1); en el árbol viejo `f15154f` sí ignoraba `.github/workflows/`. Ver Arquitectura.
 
 ## Arquitectura de datos
 
@@ -67,7 +69,7 @@ Sheet de PRECIOS de plusvalía (11tkKgl4W3ugthjWh80ZxHfT_PXSH_rPbCVmwM9l3CeU —
 
 **ADVERTENCIA — el repo es ESPEJO.** Lo que corre es lo que está pegado en el editor de Apps Script, no lo que está aquí. Evidencia dura hoy: `apps_script/Código.js` tiene 1,906 líneas y no contiene ninguna de las funciones que el front ya consume (`obraProyecto`, `notificarPago`, `tramitesEtapa`, `data.sheet`); además `MAX_INTENTOS = 20` / `VENTANA_SEGUNDOS = 300` (`:1632-1633`), valores que la memoria da por endurecidos en el vivo ([[codesarrolladores-yod-sistema]]). **Siempre `clasp pull` primero.** El deploy se hace SOBRE la implementación de producción (`clasp deploy -i AKfycbxoW0hz…`) para que la URL no cambie; sin `-i` se crea otra y el portal se cae.
 
-**ADVERTENCIA 2 — Pages NO se publica con el Action.** El sitio sale de la rama `gh-pages` (existe `origin/gh-pages`), que se actualiza copiando `dist/` a mano; el workflow ni siquiera está versionado (ver Archivos). Hoy sí están alineados: el HTML en vivo pide `assets/index-hWFf4Jum.js` y ese mismo archivo está en `dist/assets/` (curl + `ls`, 2026-09-04), o sea que lo publicado corresponde al último build local (`f15154f`, 2026-08-31).
+**ADVERTENCIA 2 — Pages NO se publica con el Action.** El sitio en vivo sale de la rama `gh-pages` de **`yodesarrollomx/Co-desarrolladores-Yod`** (`gh api repos/yodesarrollomx/Co-desarrolladores-Yod/pages` → source branch `gh-pages`, 2026-09-04), que se actualiza copiando `dist/` a mano; el workflow ni siquiera está versionado (ver Archivos). **Ojo con el clon del Escritorio:** ese `origin/gh-pages` que aparece en `git branch -a` es una referencia vieja — `git ls-remote --heads origin` solo devuelve `main`, y el Pages de `alexpueblag` sirve el cascarón desde `main` (`gh api repos/alexpueblag/…/pages`). Hoy sí están alineados: el HTML en vivo pide `assets/index-hWFf4Jum.js` y ese mismo archivo está en `dist/assets/` (curl + `ls`, 2026-09-04), o sea que lo publicado corresponde al último build local (`f15154f`, 2026-08-31).
 
 ## Decisiones
 
@@ -97,7 +99,7 @@ Sheet de PRECIOS de plusvalía (11tkKgl4W3ugthjWh80ZxHfT_PXSH_rPbCVmwM9l3CeU —
 | Alinear el catálogo comercial de ventas a Preventa I | Alejandro (contenido comercial) | Las celdas del Sheet de precios ya no dicen "Fundador II" en stats/kicker |
 | `SETUP.md` cita `apps_script/Code.gs`; el archivo real se llama `Código.js` | quien toque el repo | El nombre corregido en SETUP.md |
 | Rama `dominio-propio` (y su respaldo `…-ANTES-DEL-REBASE`) sin fusionar | quien cierre la mudanza | La rama fusionada o borrada, después de medir `git rev-list --count dominio-propio..main` ([[rename-github-yodesarrollomx]]) |
-| `origin` del clon local sigue apuntando a `alexpueblag/Co-desarrolladores-Yod` | quien toque el repo | `git remote -v` mostrando `yodesarrollomx` |
+| El clon del Escritorio es del repo **cascarón** (`alexpueblag`, solo `main`, 5 archivos). Para trabajar la app hay que clonar de nuevo `yodesarrollomx/Co-desarrolladores-Yod`; el del Escritorio se conserva (o se borra) como el cascarón que es. **No basta con cambiar la URL del remoto**: son dos repos vivos distintos y el árbol de trabajo quedaría desalineado con la rama que jala | quien toque el repo | Un clon nuevo cuyo `git ls-files` liste `src/App.jsx` |
 
 ## Por confirmar (no lo afirmes hasta preguntarlo)
 
